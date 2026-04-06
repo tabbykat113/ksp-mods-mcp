@@ -40,18 +40,19 @@ Use `ksp-mods-mcp` as the command. The server communicates over stdio.
 
 | Tool | Description |
 |---|---|
-| `search_mods_tool` | Search by name regex, tags, KSP version compatibility. Paginated. |
-| `get_mod_tool` | Full details for a mod by identifier, including release history. |
+| `search_mods_tool` | Search by name/author regex, tags, KSP version compatibility. Paginated. |
+| `get_mod_tool` | Details for a mod by identifier. Selectable categories: metadata, relations, install, versions, raw. |
 | `list_tags_tool` | All tags in the index ranked by mod count. |
 | `index_status` | DB stats and last harvest timestamp. |
 | `refresh_index` | Re-harvest the CKAN-meta archive. No-op if unchanged; use `force=True` to rebuild. |
 
 ### Search options
 
-- `name` — regex, e.g. `"engineer"`, `"^MechJeb"`, `"visual\|scatter"`
+- `name` — regex matched against identifier and display name, e.g. `"engineer"`, `"^MechJeb"`, `"visual|scatter"`
+- `author` — regex matched against author(s), e.g. `"sarbian"`, `"squad|nertea"`
 - `tags` + `tags_mode` — `"and"` (all tags required) or `"or"` (any tag)
 - `ksp_versions` — e.g. `["1.12"]`; matches any mod with a release supporting that version
-- `sort_by` — `"downloads"` (default), `"downloads asc"`, `"name"`, `"name desc"`
+- `sort_by` — `"downloads"` (default), `"downloads asc"`, `"name"`, `"name desc"`, `"download_size"`, `"install_size"`
 - `limit` / `offset` — pagination (max 100 per page)
 
 ## Development
