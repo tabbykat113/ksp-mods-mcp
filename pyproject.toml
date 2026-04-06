@@ -1,0 +1,24 @@
+[project]
+name = "ckan-indexer"
+version = "0.1.0"
+description = "MCP server and harvester for a locally-indexed, agent-queryable KSP mod database"
+requires-python = ">=3.13"
+dependencies = [
+    "httpx>=0.28.1",
+    "mcp[cli]>=1.27.0",
+    "rich>=14.3.3",
+]
+
+[tool.uv]
+package = true
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["harvester", "mcp_server"]
+
+[project.scripts]
+harvest         = "harvester.harvest:main"
+ckan-mcp-server = "mcp_server.server:main"
