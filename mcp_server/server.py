@@ -85,6 +85,7 @@ def _tool(fn):
 @_tool
 def search_mods_tool(
     name: str | None = None,
+    author: str | None = None,
     tags: list[str] | None = None,
     tags_mode: str = "and",
     ksp_versions: list[str] | None = None,
@@ -92,11 +93,14 @@ def search_mods_tool(
     limit: int = 20,
     offset: int = 0,
 ) -> str:
-    """Search KSP mods by name, tags, and/or KSP version compatibility, paginated.
+    """Search KSP mods by name, author, tags, and/or KSP version compatibility, paginated.
 
     Args:
         name: Case-insensitive regex matched against mod identifier and display name.
               Examples: "engineer", "^MechJeb", "visual|scatter"
+        author: Case-insensitive regex matched against mod author(s).
+                A mod matches if any of its authors match.
+                Examples: "sarbian", "squad|nertea"
         tags: List of tags to filter by.
               Examples: ["plugin"], ["parts", "resources"]
         tags_mode: How to combine multiple tags — "and" (mod must have all tags,
@@ -105,24 +109,27 @@ def search_mods_tool(
                       released versions supports at least one of the given KSP versions.
                       Uses prefix matching, so "1.12" matches "1.12.0", "1.12.5", etc.
                       Examples: ["1.12"], ["1.11", "1.12"]
-        sort_by: Sort order — "downloads" (default), "downloads asc", "name", "name desc".
+        sort_by: Sort order — "downloads" (default), "downloads asc", "name", "name desc",
+                 "download_size", "download_size asc", "install_size", "install_size asc".
         limit: Number of results per page (default 20, max 100).
         offset: Pagination offset (default 0).
 
     Returns JSON with keys: total, offset, limit, results.
-    Each result has: identifier, name, abstract, tags, download_count.
+    Each result has: identifier, name, abstract, tags, authors, max_ksp_version, latest_version,
+    download_count, download_size (bytes), install_size (bytes).
     """
     if tags_mode not in ("and", "or"):
         tags_mode = "and"
-    if sort_by.split()[0] not in ("downloads", "name"):
+    if sort_by.split()[0] not in ("downloads", "name", "download_size", "install_size"):
         sort_by = "downloads"
     limit = min(limit, 100)
     conn = _get_conn()
     try:
         rows  = search_mods(conn, name_pattern=name, tags=tags, tags_mode=tags_mode,
-                            ksp_versions=ksp_versions, sort_by=sort_by, limit=limit, offset=offset)
+                            ksp_versions=ksp_versions, author_pattern=author,
+                            sort_by=sort_by, limit=limit, offset=offset)
         total = count_search(conn, name_pattern=name, tags=tags, tags_mode=tags_mode,
-                             ksp_versions=ksp_versions)
+                             ksp_versions=ksp_versions, author_pattern=author)
     finally:
         conn.close()
 
@@ -136,8 +143,12 @@ def search_mods_tool(
                 "name": r["name"],
                 "abstract": r["abstract"],
                 "tags": r["tags"].split(",") if r["tags"] else [],
+                "authors": r["authors"].split(",") if r["authors"] else [],
                 "max_ksp_version": r["max_ksp_version"],
+                "latest_version": r["latest_version"],
                 "download_count": r["download_count"],
+                "download_size": r["download_size"],
+                "install_size": r["install_size"],
             }
             for r in rows
         ],
@@ -146,38 +157,88 @@ def search_mods_tool(
 
 @mcp.tool()
 @_tool
-def get_mod_tool(identifier: str) -> str:
-    """Get full details for a KSP mod by its CKAN identifier.
+def get_mod_tool(
+    identifier: str,
+    categories: list[str] | None = None,
+) -> str:
+    """Get details for a KSP mod by its CKAN identifier.
 
     Args:
         identifier: Exact CKAN identifier (e.g. "MechJeb2", "Trajectories").
                     Use search_mods to find identifiers first.
+        categories: Which detail categories to include. Defaults to ["metadata"].
+                    Available categories:
+                    - "metadata": name, abstract, authors, tags, license, version info
+                      (max_ksp_version, latest_version), download_count, resources
+                    - "relations": depends, recommends, suggests, conflicts, provides
+                    - "install": install directives
+                    - "versions": full version history with per-version KSP compatibility
+                    - "raw": full raw CKAN JSON (superset of all above)
 
-    Returns the full CKAN metadata JSON for the mod, plus download_count.
     Returns an error object if the mod is not found.
     """
+    if categories is None:
+        categories = ["metadata"]
+    cats = set(categories)
+
     conn = _get_conn()
     try:
         row = get_mod(conn, identifier)
         if row is None:
             return json.dumps({"error": f"Mod '{identifier}' not found."})
-        versions = get_mod_versions(conn, identifier)
+        versions = get_mod_versions(conn, identifier) if "versions" in cats or "raw" in cats else []
     finally:
         conn.close()
 
-    data = json.loads(row["ckan_json"])
-    data["_download_count"] = row["download_count"]
-    data["_versions"] = [
-        {
-            "mod_version":       v["mod_version"],
-            "ksp_version_exact": v["ksp_version_exact"],
-            "ksp_version_min":   v["ksp_version_min"],
-            "ksp_version_max":   v["ksp_version_max"],
-            "release_date":      v["release_date"],
-        }
-        for v in versions
-    ]
-    return json.dumps(data, indent=2)
+    if "raw" in cats:
+        data = json.loads(row["ckan_json"])
+        data["_download_count"] = row["download_count"]
+        data["_versions"] = [
+            {
+                "mod_version":       v["mod_version"],
+                "ksp_version_exact": v["ksp_version_exact"],
+                "ksp_version_max":   v["ksp_version_max"],
+                "release_date":      v["release_date"],
+            }
+            for v in versions
+        ]
+        return json.dumps(data, indent=2)
+
+    raw = json.loads(row["ckan_json"])
+    result: dict = {"identifier": identifier}
+
+    if "metadata" in cats:
+        result["name"]             = row["name"]
+        result["abstract"]         = raw.get("abstract")
+        result["authors"]          = row["authors"].split(",") if row["authors"] else []
+        result["tags"]             = row["tags"].split(",") if row["tags"] else []
+        result["license"]          = raw.get("license")
+        result["max_ksp_version"]  = row["max_ksp_version"]
+        result["latest_version"]   = row["latest_version"]
+        result["download_count"]   = row["download_count"]
+        result["resources"]        = raw.get("resources")
+
+    if "relations" in cats:
+        for key in ("depends", "recommends", "suggests", "conflicts", "provides"):
+            if key in raw:
+                result[key] = raw[key]
+
+    if "install" in cats:
+        if "install" in raw:
+            result["install"] = raw["install"]
+
+    if "versions" in cats:
+        result["versions"] = [
+            {
+                "mod_version":       v["mod_version"],
+                "ksp_version_exact": v["ksp_version_exact"],
+                "ksp_version_max":   v["ksp_version_max"],
+                "release_date":      v["release_date"],
+            }
+            for v in versions
+        ]
+
+    return json.dumps(result, indent=2)
 
 
 @mcp.tool()

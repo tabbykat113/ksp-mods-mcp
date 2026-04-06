@@ -18,7 +18,11 @@ CREATE TABLE IF NOT EXISTS mods (
     name             TEXT,
     abstract         TEXT,
     tags             TEXT,
+    authors          TEXT,
     max_ksp_version  TEXT,
+    latest_version   TEXT,
+    download_size    INTEGER,
+    install_size     INTEGER,
     download_count   INTEGER,
     pass1_at         TEXT
 );
@@ -40,6 +44,10 @@ MIGRATIONS = [
     "ALTER TABLE mods ADD COLUMN tags TEXT",
     "ALTER TABLE mods ADD COLUMN ksp_version TEXT",
     "ALTER TABLE mods ADD COLUMN max_ksp_version TEXT",
+    "ALTER TABLE mods ADD COLUMN authors TEXT",
+    "ALTER TABLE mods ADD COLUMN latest_version TEXT",
+    "ALTER TABLE mods ADD COLUMN download_size INTEGER",
+    "ALTER TABLE mods ADD COLUMN install_size INTEGER",
 ]
 
 
@@ -78,17 +86,22 @@ def upsert_mod(
     abstract: str | None,
     download_count: int | None,
     tags: list[str] | None = None,
-    max_ksp_version: str | None = None,
+    authors: list[str] | None = None,
+    download_size: int | None = None,
+    install_size: int | None = None,
 ) -> None:
     now = datetime.now(timezone.utc).isoformat()
     tags_str = ",".join(tags) if tags else None
+    authors_str = ",".join(authors) if authors else None
     conn.execute(
         """
         INSERT OR REPLACE INTO mods
-            (identifier, ckan_json, name, abstract, tags, max_ksp_version, download_count, pass1_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            (identifier, ckan_json, name, abstract, tags, authors,
+             download_size, install_size, download_count, pass1_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (identifier, ckan_json, name, abstract, tags_str, max_ksp_version, download_count, now),
+        (identifier, ckan_json, name, abstract, tags_str, authors_str,
+         download_size, install_size, download_count, now),
     )
 
 
@@ -122,6 +135,13 @@ def apply_max_ksp_versions(conn: sqlite3.Connection, max_versions: dict[str, str
     conn.executemany(
         "UPDATE mods SET max_ksp_version = ? WHERE identifier = ?",
         ((ver, ident) for ident, ver in max_versions.items()),
+    )
+
+
+def apply_latest_versions(conn: sqlite3.Connection, latest_versions: dict[str, str]) -> None:
+    conn.executemany(
+        "UPDATE mods SET latest_version = ? WHERE identifier = ?",
+        ((ver, ident) for ident, ver in latest_versions.items()),
     )
 
 
@@ -196,6 +216,7 @@ def _build_where(
     tags: list[str] | None,
     tags_mode: str,
     ksp_filter_ids: set[str] | None,
+    author_pattern: str | None = None,
 ) -> tuple[str, list]:
     """Build WHERE clause and params for mod searches."""
     wheres: list[str] = []
@@ -204,6 +225,10 @@ def _build_where(
     if name_pattern:
         wheres.append("(identifier REGEXP ? OR name REGEXP ?)")
         params += [name_pattern, name_pattern]
+
+    if author_pattern:
+        wheres.append("authors REGEXP ?")
+        params.append(author_pattern)
 
     if tags:
         tag_clauses = ["(',' || tags || ',' LIKE ?)" for _ in tags]
@@ -230,28 +255,36 @@ def search_mods(
     tags: list[str] | None = None,
     tags_mode: str = "and",
     ksp_versions: list[str] | None = None,
+    author_pattern: str | None = None,
     sort_by: str = "downloads",
     limit: int = 20,
     offset: int = 0,
 ) -> list[sqlite3.Row]:
     """
-    Search mods by name regex, tags, and/or KSP version compatibility.
+    Search mods by name regex, tags, author regex, and/or KSP version compatibility.
     - sort_by: "downloads" (default) or "name"
     """
     ksp_ids = identifiers_supporting_ksp(conn, ksp_versions) if ksp_versions else None
-    where_clause, params = _build_where(name_pattern, tags, tags_mode, ksp_ids)
+    where_clause, params = _build_where(name_pattern, tags, tags_mode, ksp_ids, author_pattern)
     parts = sort_by.lower().split()
     key, direction = parts[0], parts[1] if len(parts) > 1 else None
 
     if key == "name":
         dir_sql = "DESC" if direction == "desc" else "ASC"
         order = f"name COLLATE NOCASE {dir_sql}"
+    elif key == "download_size":
+        dir_sql = "ASC" if direction == "asc" else "DESC"
+        order = f"download_size {dir_sql} NULLS LAST"
+    elif key == "install_size":
+        dir_sql = "ASC" if direction == "asc" else "DESC"
+        order = f"install_size {dir_sql} NULLS LAST"
     else:  # downloads
         dir_sql = "ASC" if direction == "asc" else "DESC"
         order = f"download_count {dir_sql} NULLS LAST"
     return conn.execute(
         f"""
-        SELECT identifier, name, abstract, tags, max_ksp_version, download_count
+        SELECT identifier, name, abstract, tags, authors, max_ksp_version, latest_version,
+               download_count, download_size, install_size
         FROM mods
         {where_clause}
         ORDER BY {order}
@@ -267,9 +300,10 @@ def count_search(
     tags: list[str] | None = None,
     tags_mode: str = "and",
     ksp_versions: list[str] | None = None,
+    author_pattern: str | None = None,
 ) -> int:
     ksp_ids = identifiers_supporting_ksp(conn, ksp_versions) if ksp_versions else None
-    where_clause, params = _build_where(name_pattern, tags, tags_mode, ksp_ids)
+    where_clause, params = _build_where(name_pattern, tags, tags_mode, ksp_ids, author_pattern)
     return conn.execute(
         f"SELECT count(*) FROM mods {where_clause}", params
     ).fetchone()[0]

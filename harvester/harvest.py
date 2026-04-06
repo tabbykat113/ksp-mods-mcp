@@ -26,6 +26,7 @@ from rich.progress import (
 from .db import (
     _parse_ver,
     apply_download_counts,
+    apply_latest_versions,
     apply_max_ksp_versions,
     get_etag,
     get_mod_count,
@@ -151,7 +152,10 @@ def stream_and_parse(client: httpx.Client, stored_etag: str | None) -> None:
             buffered     = io.BufferedReader(raw_stream, buffer_size=256 * 1024)
 
             counts: dict[str, int] = {}
-            max_ksp: dict[str, str] = {}  # identifier → highest KSP version seen
+            max_ksp: dict[str, str] = {}       # identifier → highest KSP version seen
+            latest_ver: dict[str, tuple] = {}  # identifier → (release_date, mod_version)
+            download_size_count = 0
+            install_size_count  = 0
             mod_count     = 0
             version_count = 0
             skip_count    = 0
@@ -197,6 +201,10 @@ def stream_and_parse(client: httpx.Client, stored_etag: str | None) -> None:
                     if isinstance(raw_tags, str):
                         raw_tags = [raw_tags]
 
+                    raw_authors = data.get("author")
+                    if isinstance(raw_authors, str):
+                        raw_authors = [raw_authors]
+
                     upsert_mod(
                         conn,
                         identifier=identifier,
@@ -205,6 +213,9 @@ def stream_and_parse(client: httpx.Client, stored_etag: str | None) -> None:
                         abstract=data.get("abstract"),
                         download_count=None,
                         tags=raw_tags,
+                        authors=raw_authors,
+                        download_size=data.get("download_size"),
+                        install_size=data.get("install_size"),
                     )
 
                     mod_version = data.get("version")
@@ -226,6 +237,7 @@ def stream_and_parse(client: httpx.Client, stored_etag: str | None) -> None:
                             if current is None or _parse_ver(normalized) > _parse_ver(current):
                                 max_ksp[identifier] = normalized
 
+                        release_date = data.get("release_date")
                         upsert_mod_version(
                             conn,
                             identifier=identifier,
@@ -233,17 +245,30 @@ def stream_and_parse(client: httpx.Client, stored_etag: str | None) -> None:
                             ksp_version_exact=kv_exact,
                             ksp_version_min=data.get("ksp_version_min"),
                             ksp_version_max=kv_max,
-                            release_date=data.get("release_date"),
+                            release_date=release_date,
                         )
+                        # Track latest mod version by release_date (nulls sort last)
+                        current_lv = latest_ver.get(identifier)
+                        rd = release_date or ""
+                        if current_lv is None or rd > current_lv[0]:
+                            latest_ver[identifier] = (rd, str(mod_version))
+
+                    if data.get("download_size"):
+                        download_size_count += 1
+                    if data.get("install_size"):
+                        install_size_count += 1
+
                     mod_count += 1
                     if mod_version:
                         version_count += 1
 
-        # Apply download counts and max KSP versions, then commit atomically
+        # Apply download counts, max KSP versions, and latest mod versions, then commit atomically
         if counts:
             apply_download_counts(conn, counts)
         if max_ksp:
             apply_max_ksp_versions(conn, max_ksp)
+        if latest_ver:
+            apply_latest_versions(conn, {ident: ver for ident, (_, ver) in latest_ver.items()})
 
         if server_etag:
             set_etag(conn, server_etag)
@@ -257,6 +282,11 @@ def stream_and_parse(client: httpx.Client, stored_etag: str | None) -> None:
             f"[bold]{version_count}[/bold] version entries "
             f"([bold]{skip_count}[/bold] skipped). "
             f"Download counts applied for [bold]{len(counts)}[/bold] mods."
+        )
+        console.print(
+            f"Size metadata: [bold]{download_size_count}[/bold] with download_size, "
+            f"[bold]{install_size_count}[/bold] with install_size "
+            f"(out of [bold]{mod_count}[/bold] version files)."
         )
 
 
