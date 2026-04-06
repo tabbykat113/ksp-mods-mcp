@@ -1,4 +1,4 @@
-# ckan-indexer
+# ksp-mods-mcp
 
 MCP server for searching KSP mods from the [CKAN](https://github.com/KSP-CKAN/CKAN) index.
 
@@ -7,12 +7,12 @@ MCP server for searching KSP mods from the [CKAN](https://github.com/KSP-CKAN/CK
 Requires [uv](https://docs.astral.sh/uv/).
 
 ```bash
-uv tool install git+https://github.com/tabbykat113/ckan-indexer
+uv tool install git+https://github.com/tabbykat113/ksp-mods-mcp
 ```
 
 That's it. The MCP server automatically builds the index on first launch.
 
-The database is stored in your platform's data directory (`~/.local/share/ckan-indexer/ckan.db` on Linux, `AppData/Local/ckan-indexer/ckan.db` on Windows). Override with the `CKAN_DB` environment variable if needed.
+The database is stored in your platform's data directory (`~/.local/share/ksp-mods-mcp/ckan.db` on Linux, `AppData/Local/ksp-mods-mcp/ckan.db` on Windows). Override with the `CKAN_DB` environment variable if needed.
 
 You can also run `harvest` manually at any time to update the index — it's a no-op if nothing changed upstream.
 
@@ -26,7 +26,7 @@ Edit `claude_desktop_config.json` (find it via **Settings → Developer**):
 {
   "mcpServers": {
     "ckan": {
-      "command": "ckan-mcp-server"
+      "command": "ksp-mods-mcp"
     }
   }
 }
@@ -34,7 +34,7 @@ Edit `claude_desktop_config.json` (find it via **Settings → Developer**):
 
 ### Other MCP clients
 
-Use `ckan-mcp-server` as the command. The server communicates over stdio.
+Use `ksp-mods-mcp` as the command. The server communicates over stdio.
 
 ## Tools
 
@@ -57,9 +57,9 @@ Use `ckan-mcp-server` as the command. The server communicates over stdio.
 ## Development
 
 ```bash
-git clone https://github.com/tabbykat113/ckan-indexer
-cd ckan-indexer
+git clone https://github.com/tabbykat113/ksp-mods-mcp
+cd ksp-mods-mcp
 uv sync
 uv run harvest
-uv run ckan-mcp-server
+uv run ksp-mods-mcp
 ```

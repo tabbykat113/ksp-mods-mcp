@@ -313,7 +313,7 @@ Options:
 
 Environment:
   CKAN_DB   Path to the SQLite database file.
-            Default: platform data dir (e.g. ~/.local/share/ckan-indexer/ckan.db).
+            Default: platform data dir (e.g. ~/.local/share/ksp-mods-mcp/ckan.db).
 """
 
 

@@ -1,10 +1,10 @@
-# ckan-indexer — notes for Claude
+# ksp-mods-mcp — notes for Claude
 
 ## Project overview
 
 A uv Python project with two components:
 - **`harvest`** CLI — downloads and indexes KSP mod metadata from CKAN-meta into a local SQLite DB
-- **`ckan-mcp-server`** — stdio MCP server that exposes search/lookup tools over that DB
+- **`ksp-mods-mcp`** — stdio MCP server that exposes search/lookup tools over that DB
 
 ## Architecture
 
@@ -25,7 +25,7 @@ explore_mod.py — standalone exploration script (not part of the package)
 - **`mod_versions` table** — stores every `.ckan` file as a version row (~29k rows). The `mods` table stores one row per unique identifier (latest wins). Version history is used for KSP compatibility filtering.
 - **`max_ksp_version`** — denormalized onto `mods` at harvest time. Normalized to `major.minor`, capped at `1.12` (KSP1 ceiling). Mods with no upper bound or no constraints default to `1.12`.
 - **KSP version filter** — prefix-based tuple comparison in Python (`identifiers_supporting_ksp`), not SQL. Runs against the full `mod_versions` table then passes a set of identifiers into the WHERE clause.
-- **Platform-aware DB path** — defaults to `~/.local/share/ckan-indexer/ckan.db` (Linux) or `AppData/Local/ckan-indexer/ckan.db` (Windows). `CKAN_DB` env var overrides.
+- **Platform-aware DB path** — defaults to `~/.local/share/ksp-mods-mcp/ckan.db` (Linux) or `AppData/Local/ksp-mods-mcp/ckan.db` (Windows). `CKAN_DB` env var overrides.
 - **Auto-harvest on MCP startup** — the server calls `run_harvest()` before starting, so a fresh install works without running `harvest` separately. ETag check keeps this instant on subsequent starts.
 - **Error handling in tools** — `@_tool` decorator catches all exceptions and returns them as `{"error": "..."}` JSON so the model gets a readable message rather than a traceback.
 
@@ -65,11 +65,11 @@ uv run harvest --force
 
 **Run MCP server locally for testing (auto-harvests on start):**
 ```bash
-uv run ckan-mcp-server
+uv run ksp-mods-mcp
 ```
 
 **Test tools via stdin:**
 ```bash
 printf '{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"0"}}}\n{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"index_status","arguments":{}}}\n' \
-  | uv run ckan-mcp-server 2>/dev/null
+  | uv run ksp-mods-mcp 2>/dev/null
 ```

@@ -1,5 +1,5 @@
 [project]
-name = "ckan-indexer"
+name = "ksp-mods-mcp"
 version = "0.1.0"
 description = "MCP server and harvester for a locally-indexed, agent-queryable KSP mod database"
 requires-python = ">=3.13"
@@ -21,4 +21,4 @@ packages = ["harvester", "mcp_server"]
 
 [project.scripts]
 harvest         = "harvester.harvest:main"
-ckan-mcp-server = "mcp_server.server:main"
+ksp-mods-mcp    = "mcp_server.server:main"

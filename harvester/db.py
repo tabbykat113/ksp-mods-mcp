@@ -13,7 +13,7 @@ def _default_db_path() -> Path:
         base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
     else:
         base = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
-    return base / "ckan-indexer" / "ckan.db"
+    return base / "ksp-mods-mcp" / "ckan.db"
 
 
 DB_PATH = _default_db_path()
