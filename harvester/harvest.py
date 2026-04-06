@@ -39,8 +39,6 @@ from .db import (
 ARCHIVE_URL = "https://github.com/KSP-CKAN/CKAN-meta/archive/refs/heads/master.tar.gz"
 CHUNK_SIZE  = 65_536  # 64 KiB
 
-console = Console()
-
 
 # ---------------------------------------------------------------------------
 # Streaming bridge: httpx byte iterator → tarfile-compatible file-like object
@@ -113,7 +111,7 @@ def check_etag(client: httpx.Client, stored_etag: str | None) -> tuple[bool, str
 # Core streaming + parsing
 # ---------------------------------------------------------------------------
 
-def stream_and_parse(client: httpx.Client, stored_etag: str | None) -> None:
+def stream_and_parse(client: httpx.Client, stored_etag: str | None, *, console: Console) -> dict:
     headers = {}
     if stored_etag:
         headers["If-None-Match"] = stored_etag
@@ -123,7 +121,7 @@ def stream_and_parse(client: httpx.Client, stored_etag: str | None) -> None:
     with client.stream("GET", ARCHIVE_URL, headers=headers, timeout=archive_timeout) as resp:
         if resp.status_code == 304:
             console.print("[green]Archive unchanged (ETag match). Nothing to do.[/green]")
-            return
+            return {"status": "skipped", "reason": "etag_match"}
 
         resp.raise_for_status()
         server_etag = resp.headers.get("etag")
@@ -289,6 +287,14 @@ def stream_and_parse(client: httpx.Client, stored_etag: str | None) -> None:
             f"(out of [bold]{mod_count}[/bold] version files)."
         )
 
+        return {
+            "status": "updated",
+            "total_mods": total,
+            "version_entries": version_count,
+            "skipped_files": skip_count,
+            "download_counts_applied": len(counts),
+        }
+
 
 # ---------------------------------------------------------------------------
 # Entry point
@@ -307,16 +313,20 @@ Options:
 
 Environment:
   CKAN_DB   Path to the SQLite database file.
-            Default: ckan.db in the project root.
+            Default: platform data dir (e.g. ~/.local/share/ckan-indexer/ckan.db).
 """
 
 
-def main() -> None:
-    if "--help" in sys.argv or "-h" in sys.argv:
-        print(HELP, end="")
-        return
+def run_harvest(*, force: bool = False, console: Console | None = None) -> dict:
+    """Run the CKAN-meta harvest. Returns a result dict with status and stats.
 
-    force = "--force" in sys.argv
+    Args:
+        force: Bypass ETag check and re-download unconditionally.
+        console: Rich Console for output. Defaults to a new Console() for CLI use.
+                 Pass Console(quiet=True) to suppress all output.
+    """
+    if console is None:
+        console = Console()
 
     conn = open_db()
     stored_etag = get_etag(conn) if not force else None
@@ -327,9 +337,18 @@ def main() -> None:
             skip, _ = check_etag(client, stored_etag)
             if skip:
                 console.print("[green]Archive unchanged (ETag match). Nothing to do.[/green]")
-                return
+                return {"status": "skipped", "reason": "etag_match"}
 
-        stream_and_parse(client, stored_etag)
+        return stream_and_parse(client, stored_etag, console=console)
+
+
+def main() -> None:
+    if "--help" in sys.argv or "-h" in sys.argv:
+        print(HELP, end="")
+        return
+
+    force = "--force" in sys.argv
+    run_harvest(force=force)
 
 
 if __name__ == "__main__":

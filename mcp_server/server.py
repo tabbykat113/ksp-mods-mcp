@@ -16,6 +16,7 @@ import sqlite3
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
+from rich.console import Console
 
 from harvester.db import (
     DB_PATH,
@@ -27,6 +28,7 @@ from harvester.db import (
     open_db,
     search_mods,
 )
+from harvester.harvest import run_harvest
 
 mcp = FastMCP(
     "ckan-mod-index",
@@ -54,12 +56,6 @@ def _add_regexp(conn: sqlite3.Connection) -> None:
 
 
 def _get_conn() -> sqlite3.Connection:
-    if not DB_PATH.exists():
-        raise FileNotFoundError(
-            f"Index database not found at '{DB_PATH}'. "
-            f"Run `harvest` to build it, or set the CKAN_DB environment variable "
-            f"to the correct path if the database lives elsewhere."
-        )
     conn = open_db()
     _add_regexp(conn)
     return conn
@@ -272,7 +268,7 @@ def index_status() -> str:
     and when the index was last harvested.
     """
     if not DB_PATH.exists():
-        return json.dumps({"status": "not_initialized", "message": "Run `harvest` to build the index."})
+        return json.dumps({"status": "not_initialized", "message": "No index yet. Call refresh_index to build it."})
 
     conn = _get_conn()
     try:
@@ -294,11 +290,32 @@ def index_status() -> str:
     })
 
 
+_quiet_console = Console(quiet=True)
+
+
+@mcp.tool()
+@_tool
+def refresh_index(force: bool = False) -> str:
+    """Re-harvest the CKAN-meta archive to update the mod index.
+
+    By default, this is a no-op if nothing has changed upstream (ETag check).
+    Use force=True to bypass the check and rebuild unconditionally.
+
+    Args:
+        force: Bypass ETag check and re-download/re-index everything.
+
+    Returns JSON with harvest result: status ("skipped" or "updated") and stats.
+    """
+    result = run_harvest(force=force, console=_quiet_console)
+    return json.dumps(result)
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
 def main() -> None:
+    run_harvest(console=_quiet_console)
     mcp.run(transport="stdio")
 
 

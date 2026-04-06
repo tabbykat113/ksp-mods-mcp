@@ -25,7 +25,8 @@ explore_mod.py — standalone exploration script (not part of the package)
 - **`mod_versions` table** — stores every `.ckan` file as a version row (~29k rows). The `mods` table stores one row per unique identifier (latest wins). Version history is used for KSP compatibility filtering.
 - **`max_ksp_version`** — denormalized onto `mods` at harvest time. Normalized to `major.minor`, capped at `1.12` (KSP1 ceiling). Mods with no upper bound or no constraints default to `1.12`.
 - **KSP version filter** — prefix-based tuple comparison in Python (`identifiers_supporting_ksp`), not SQL. Runs against the full `mod_versions` table then passes a set of identifiers into the WHERE clause.
-- **`CKAN_DB` env var** — controls DB path for both `harvest` and `ckan-mcp-server`. Essential when installed via `uv tool install` since the package directory isn't writable.
+- **Platform-aware DB path** — defaults to `~/.local/share/ckan-indexer/ckan.db` (Linux) or `AppData/Local/ckan-indexer/ckan.db` (Windows). `CKAN_DB` env var overrides.
+- **Auto-harvest on MCP startup** — the server calls `run_harvest()` before starting, so a fresh install works without running `harvest` separately. ETag check keeps this instant on subsequent starts.
 - **Error handling in tools** — `@_tool` decorator catches all exceptions and returns them as `{"error": "..."}` JSON so the model gets a readable message rather than a traceback.
 
 ## DB schema
@@ -49,6 +50,7 @@ mod_versions  (identifier, mod_version PK,
 - `get_mod_tool` — full CKAN JSON + `_download_count` + `_versions` array
 - `list_tags_tool` — all tags ranked by mod count
 - `index_status` — DB stats, last harvest time, etag
+- `refresh_index` — re-harvest CKAN-meta archive (ETag-aware, force option)
 
 ## Passes (see ROADMAP.md)
 
@@ -61,7 +63,7 @@ Only Pass 1 is implemented. Passes 2 (external enrichment) and 3 (LM synthesis +
 uv run harvest --force
 ```
 
-**Run MCP server locally for testing:**
+**Run MCP server locally for testing (auto-harvests on start):**
 ```bash
 uv run ckan-mcp-server
 ```

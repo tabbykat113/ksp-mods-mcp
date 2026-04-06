@@ -1,10 +1,22 @@
 import os
 import sqlite3
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-_default_db = Path(__file__).parent.parent / "ckan.db"
-DB_PATH = Path(os.environ["CKAN_DB"]) if "CKAN_DB" in os.environ else _default_db
+
+def _default_db_path() -> Path:
+    """Platform-aware default DB location. CKAN_DB env var overrides."""
+    if "CKAN_DB" in os.environ:
+        return Path(os.environ["CKAN_DB"])
+    if sys.platform == "win32":
+        base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
+    else:
+        base = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
+    return base / "ckan-indexer" / "ckan.db"
+
+
+DB_PATH = _default_db_path()
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -52,6 +64,7 @@ MIGRATIONS = [
 
 
 def open_db(path: Path = DB_PATH) -> sqlite3.Connection:
+    path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(SCHEMA)

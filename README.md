@@ -10,13 +10,11 @@ Requires [uv](https://docs.astral.sh/uv/).
 uv tool install git+https://github.com/tabbykat113/ckan-indexer
 ```
 
-Then build the index (downloads ~5 MB, takes a few seconds):
+That's it. The MCP server automatically builds the index on first launch.
 
-```bash
-CKAN_DB=~/.local/share/ckan-indexer/ckan.db harvest
-```
+The database is stored in your platform's data directory (`~/.local/share/ckan-indexer/ckan.db` on Linux, `AppData/Local/ckan-indexer/ckan.db` on Windows). Override with the `CKAN_DB` environment variable if needed.
 
-Re-run `harvest` periodically to pick up new/updated mods. It's a no-op if nothing changed upstream.
+You can also run `harvest` manually at any time to update the index — it's a no-op if nothing changed upstream.
 
 ## Adding to your MCP client
 
@@ -28,24 +26,15 @@ Edit `claude_desktop_config.json` (find it via **Settings → Developer**):
 {
   "mcpServers": {
     "ckan": {
-      "command": "ckan-mcp-server",
-      "env": {
-        "CKAN_DB": "/home/youruser/.local/share/ckan-indexer/ckan.db"
-      }
+      "command": "ckan-mcp-server"
     }
   }
 }
 ```
 
-On Windows, use a full path with forward slashes or escaped backslashes:
-
-```json
-"CKAN_DB": "C:/Users/youruser/AppData/Local/ckan-indexer/ckan.db"
-```
-
 ### Other MCP clients
 
-Use `ckan-mcp-server` as the command with `CKAN_DB` set to wherever you ran `harvest`. The server communicates over stdio.
+Use `ckan-mcp-server` as the command. The server communicates over stdio.
 
 ## Tools
 
@@ -55,6 +44,7 @@ Use `ckan-mcp-server` as the command with `CKAN_DB` set to wherever you ran `har
 | `get_mod_tool` | Full details for a mod by identifier, including release history. |
 | `list_tags_tool` | All tags in the index ranked by mod count. |
 | `index_status` | DB stats and last harvest timestamp. |
+| `refresh_index` | Re-harvest the CKAN-meta archive. No-op if unchanged; use `force=True` to rebuild. |
 
 ### Search options
 
