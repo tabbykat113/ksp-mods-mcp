@@ -10,7 +10,7 @@ Requires [uv](https://docs.astral.sh/uv/).
 uv tool install git+https://github.com/tabbykat113/ksp-mods-mcp
 ```
 
-That's it. The MCP server automatically builds the index on first launch.
+That's it. The index is built automatically on the first tool call.
 
 The database is stored in your platform's data directory (`~/.local/share/ksp-mods-mcp/ckan.db` on Linux, `AppData/Local/ksp-mods-mcp/ckan.db` on Windows). Override with the `CKAN_DB` environment variable if needed.
 
@@ -52,7 +52,7 @@ Use `ksp-mods-mcp` as the command. The server communicates over stdio.
 - `author` — regex matched against author(s), e.g. `"sarbian"`, `"squad|nertea"`
 - `tags` + `tags_mode` — `"and"` (all tags required) or `"or"` (any tag)
 - `ksp_versions` — e.g. `["1.12"]`; matches any mod with a release supporting that version
-- `sort_by` — `"downloads"` (default), `"downloads asc"`, `"name"`, `"name desc"`, `"download_size"`, `"install_size"`
+- `sort_by` — `"downloads"` (default), `"downloads asc"`, `"name"`, `"name desc"`, `"download_size"`, `"install_size"`, `"updated"`, `"updated asc"`
 - `limit` / `offset` — pagination (max 100 per page)
 
 ## Development

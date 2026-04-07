@@ -9,6 +9,7 @@ import io
 import json
 import sys
 import tarfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
@@ -26,13 +27,12 @@ from rich.progress import (
 from .db import (
     _parse_ver,
     apply_download_counts,
-    apply_latest_versions,
+    apply_mod_data,
     apply_max_ksp_versions,
     get_etag,
     get_mod_count,
     open_db,
     set_etag,
-    upsert_mod,
     upsert_mod_version,
 )
 
@@ -150,10 +150,10 @@ def stream_and_parse(client: httpx.Client, stored_etag: str | None, *, console: 
             buffered     = io.BufferedReader(raw_stream, buffer_size=256 * 1024)
 
             counts: dict[str, int] = {}
-            max_ksp: dict[str, str] = {}       # identifier → highest KSP version seen
-            latest_ver: dict[str, tuple] = {}  # identifier → (release_date, mod_version)
-            download_size_count = 0
-            install_size_count  = 0
+            max_ksp: dict[str, str] = {}   # identifier → highest KSP version seen
+            mod_data: dict[str, dict] = {} # identifier → latest-version metadata
+            mods_with_download_size: set[str] = set()
+            mods_with_install_size:  set[str] = set()
             mod_count     = 0
             version_count = 0
             skip_count    = 0
@@ -203,26 +203,46 @@ def stream_and_parse(client: httpx.Client, stored_etag: str | None, *, console: 
                     if isinstance(raw_authors, str):
                         raw_authors = [raw_authors]
 
-                    upsert_mod(
-                        conn,
-                        identifier=identifier,
-                        ckan_json=text,
-                        name=data.get("name"),
-                        abstract=data.get("abstract"),
-                        download_count=None,
-                        tags=raw_tags,
-                        authors=raw_authors,
-                        download_size=data.get("download_size"),
-                        install_size=data.get("install_size"),
-                    )
-
                     mod_version = data.get("version")
+                    release_date = data.get("release_date")
+
+                    # Track latest-version entry per identifier.
+                    # Priority: release_date beats no-date; when both have dates, newer wins;
+                    # when neither has a date, fall back to lexicographic mod_version comparison.
+                    current_md = mod_data.get(identifier)
+                    mv_str = str(mod_version) if mod_version else ""
+                    rd = release_date or ""
+                    if current_md is None:
+                        take = True
+                    elif rd and not current_md["release_date"]:
+                        take = True   # first real date always wins over no-date
+                    elif current_md["release_date"] and not rd:
+                        take = False  # existing has date, new doesn't — keep existing
+                    elif rd and current_md["release_date"]:
+                        take = rd > current_md["release_date"]
+                    else:
+                        take = mv_str > current_md["latest_version_raw"]
+                    if take:
+                        mod_data[identifier] = {
+                            "ckan_json":    text,
+                            "name":         data.get("name"),
+                            "abstract":     data.get("abstract"),
+                            "tags":         raw_tags,
+                            "authors":      raw_authors,
+                            "download_size": data.get("download_size"),
+                            "install_size": data.get("install_size"),
+                            "latest_version": str(mod_version) if mod_version else None,
+                            "latest_version_raw": mv_str,
+                            "last_updated_at": release_date,  # None if unset
+                            "release_date": rd,
+                            "pass1_at":     datetime.now(timezone.utc).isoformat(),
+                        }
+
                     if mod_version:
                         kv_exact = data.get("ksp_version")
                         kv_max   = data.get("ksp_version_max")
-                        # The "ceiling" version for this .ckan entry, normalized to major.minor
-                        kv_min  = data.get("ksp_version_min")
-                        ceiling = kv_exact or kv_max
+                        kv_min   = data.get("ksp_version_min")
+                        ceiling  = kv_exact or kv_max
                         if not ceiling:
                             # min-only or no constraints at all → no upper bound → treat as latest
                             ceiling = "1.12"
@@ -235,38 +255,34 @@ def stream_and_parse(client: httpx.Client, stored_etag: str | None, *, console: 
                             if current is None or _parse_ver(normalized) > _parse_ver(current):
                                 max_ksp[identifier] = normalized
 
-                        release_date = data.get("release_date")
                         upsert_mod_version(
                             conn,
                             identifier=identifier,
                             mod_version=str(mod_version),
                             ksp_version_exact=kv_exact,
-                            ksp_version_min=data.get("ksp_version_min"),
+                            ksp_version_min=kv_min,
                             ksp_version_max=kv_max,
                             release_date=release_date,
+                            download_size=data.get("download_size"),
+                            install_size=data.get("install_size"),
                         )
-                        # Track latest mod version by release_date (nulls sort last)
-                        current_lv = latest_ver.get(identifier)
-                        rd = release_date or ""
-                        if current_lv is None or rd > current_lv[0]:
-                            latest_ver[identifier] = (rd, str(mod_version))
 
                     if data.get("download_size"):
-                        download_size_count += 1
+                        mods_with_download_size.add(identifier)
                     if data.get("install_size"):
-                        install_size_count += 1
+                        mods_with_install_size.add(identifier)
 
                     mod_count += 1
                     if mod_version:
                         version_count += 1
 
-        # Apply download counts, max KSP versions, and latest mod versions, then commit atomically
+        # Apply mod rows, download counts, and max KSP versions, then commit atomically
+        if mod_data:
+            apply_mod_data(conn, mod_data)
         if counts:
             apply_download_counts(conn, counts)
         if max_ksp:
             apply_max_ksp_versions(conn, max_ksp)
-        if latest_ver:
-            apply_latest_versions(conn, {ident: ver for ident, (_, ver) in latest_ver.items()})
 
         if server_etag:
             set_etag(conn, server_etag)
@@ -282,9 +298,8 @@ def stream_and_parse(client: httpx.Client, stored_etag: str | None, *, console: 
             f"Download counts applied for [bold]{len(counts)}[/bold] mods."
         )
         console.print(
-            f"Size metadata: [bold]{download_size_count}[/bold] with download_size, "
-            f"[bold]{install_size_count}[/bold] with install_size "
-            f"(out of [bold]{mod_count}[/bold] version files)."
+            f"Size metadata: [bold]{len(mods_with_download_size)}[/bold] mods with download_size, "
+            f"[bold]{len(mods_with_install_size)}[/bold] mods with install_size."
         )
 
         return {
@@ -293,6 +308,8 @@ def stream_and_parse(client: httpx.Client, stored_etag: str | None, *, console: 
             "version_entries": version_count,
             "skipped_files": skip_count,
             "download_counts_applied": len(counts),
+            "mods_with_download_size": len(mods_with_download_size),
+            "mods_with_install_size": len(mods_with_install_size),
         }
 
 

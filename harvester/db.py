@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS mods (
     authors          TEXT,
     max_ksp_version  TEXT,
     latest_version   TEXT,
+    last_updated_at  TEXT,
     download_size    INTEGER,
     install_size     INTEGER,
     download_count   INTEGER,
@@ -46,6 +47,8 @@ CREATE TABLE IF NOT EXISTS mod_versions (
     ksp_version_min     TEXT,
     ksp_version_max     TEXT,
     release_date        TEXT,
+    download_size       INTEGER,
+    install_size        INTEGER,
     PRIMARY KEY (identifier, mod_version)
 );
 
@@ -60,6 +63,9 @@ MIGRATIONS = [
     "ALTER TABLE mods ADD COLUMN latest_version TEXT",
     "ALTER TABLE mods ADD COLUMN download_size INTEGER",
     "ALTER TABLE mods ADD COLUMN install_size INTEGER",
+    "ALTER TABLE mods ADD COLUMN last_updated_at TEXT",
+    "ALTER TABLE mod_versions ADD COLUMN download_size INTEGER",
+    "ALTER TABLE mod_versions ADD COLUMN install_size INTEGER",
 ]
 
 
@@ -91,30 +97,39 @@ def set_etag(conn: sqlite3.Connection, etag: str) -> None:
     conn.execute("INSERT OR REPLACE INTO meta VALUES ('etag', ?)", (etag,))
 
 
-def upsert_mod(
-    conn: sqlite3.Connection,
-    identifier: str,
-    ckan_json: str,
-    name: str | None,
-    abstract: str | None,
-    download_count: int | None,
-    tags: list[str] | None = None,
-    authors: list[str] | None = None,
-    download_size: int | None = None,
-    install_size: int | None = None,
-) -> None:
-    now = datetime.now(timezone.utc).isoformat()
-    tags_str = ",".join(tags) if tags else None
-    authors_str = ",".join(authors) if authors else None
-    conn.execute(
+def apply_mod_data(conn: sqlite3.Connection, mod_data: dict[str, dict]) -> None:
+    """Bulk-insert one row per identifier using the latest-version's metadata.
+
+    mod_data maps identifier → dict with keys:
+      ckan_json, name, abstract, tags (list|None), authors (list|None),
+      download_size (int|None), install_size (int|None),
+      latest_version (str|None), last_updated_at (str|None), pass1_at (str ISO).
+    """
+    rows = [
+        (
+            ident,
+            d["ckan_json"],
+            d["name"],
+            d["abstract"],
+            ",".join(d["tags"]) if d["tags"] else None,
+            ",".join(d["authors"]) if d["authors"] else None,
+            d["download_size"],
+            d["install_size"],
+            None,               # download_count applied separately
+            d["latest_version"],
+            d["last_updated_at"] or None,
+            d["pass1_at"],
+        )
+        for ident, d in mod_data.items()
+    ]
+    conn.executemany(
         """
         INSERT OR REPLACE INTO mods
             (identifier, ckan_json, name, abstract, tags, authors,
-             download_size, install_size, download_count, pass1_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             download_size, install_size, download_count, latest_version, last_updated_at, pass1_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (identifier, ckan_json, name, abstract, tags_str, authors_str,
-         download_size, install_size, download_count, now),
+        rows,
     )
 
 
@@ -126,14 +141,18 @@ def upsert_mod_version(
     ksp_version_min: str | None,
     ksp_version_max: str | None,
     release_date: str | None,
+    download_size: int | None = None,
+    install_size: int | None = None,
 ) -> None:
     conn.execute(
         """
         INSERT OR REPLACE INTO mod_versions
-            (identifier, mod_version, ksp_version_exact, ksp_version_min, ksp_version_max, release_date)
-        VALUES (?, ?, ?, ?, ?, ?)
+            (identifier, mod_version, ksp_version_exact, ksp_version_min, ksp_version_max,
+             release_date, download_size, install_size)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (identifier, mod_version, ksp_version_exact, ksp_version_min, ksp_version_max, release_date),
+        (identifier, mod_version, ksp_version_exact, ksp_version_min, ksp_version_max,
+         release_date, download_size, install_size),
     )
 
 
@@ -150,12 +169,6 @@ def apply_max_ksp_versions(conn: sqlite3.Connection, max_versions: dict[str, str
         ((ver, ident) for ident, ver in max_versions.items()),
     )
 
-
-def apply_latest_versions(conn: sqlite3.Connection, latest_versions: dict[str, str]) -> None:
-    conn.executemany(
-        "UPDATE mods SET latest_version = ? WHERE identifier = ?",
-        ((ver, ident) for ident, ver in latest_versions.items()),
-    )
 
 
 def get_mod_count(conn: sqlite3.Connection) -> int:
@@ -291,13 +304,16 @@ def search_mods(
     elif key == "install_size":
         dir_sql = "ASC" if direction == "asc" else "DESC"
         order = f"install_size {dir_sql} NULLS LAST"
+    elif key == "updated":
+        dir_sql = "ASC" if direction == "asc" else "DESC"
+        order = f"last_updated_at {dir_sql} NULLS LAST"
     else:  # downloads
         dir_sql = "ASC" if direction == "asc" else "DESC"
         order = f"download_count {dir_sql} NULLS LAST"
     return conn.execute(
         f"""
         SELECT identifier, name, abstract, tags, authors, max_ksp_version, latest_version,
-               download_count, download_size, install_size
+               last_updated_at, download_count, download_size, install_size
         FROM mods
         {where_clause}
         ORDER BY {order}
@@ -331,7 +347,8 @@ def get_mod(conn: sqlite3.Connection, identifier: str) -> sqlite3.Row | None:
 def get_mod_versions(conn: sqlite3.Connection, identifier: str) -> list[sqlite3.Row]:
     return conn.execute(
         """
-        SELECT mod_version, ksp_version_exact, ksp_version_min, ksp_version_max, release_date
+        SELECT mod_version, ksp_version_exact, ksp_version_min, ksp_version_max,
+               release_date, download_size, install_size
         FROM mod_versions WHERE identifier = ?
         ORDER BY release_date DESC NULLS LAST
         """,

@@ -106,17 +106,19 @@ def search_mods_tool(
                       Uses prefix matching, so "1.12" matches "1.12.0", "1.12.5", etc.
                       Examples: ["1.12"], ["1.11", "1.12"]
         sort_by: Sort order — "downloads" (default), "downloads asc", "name", "name desc",
-                 "download_size", "download_size asc", "install_size", "install_size asc".
+                 "download_size", "download_size asc", "install_size", "install_size asc",
+                 "updated", "updated asc".
         limit: Number of results per page (default 20, max 100).
         offset: Pagination offset (default 0).
 
     Returns JSON with keys: total, offset, limit, results.
     Each result has: identifier, name, abstract, tags, authors, max_ksp_version, latest_version,
-    download_count, download_size (bytes), install_size (bytes).
+    last_updated_at, download_count, download_size (bytes), install_size (bytes).
     """
+    _ensure_harvested()
     if tags_mode not in ("and", "or"):
         tags_mode = "and"
-    if sort_by.split()[0] not in ("downloads", "name", "download_size", "install_size"):
+    if sort_by.split()[0] not in ("downloads", "name", "download_size", "install_size", "updated"):
         sort_by = "downloads"
     limit = min(limit, 100)
     conn = _get_conn()
@@ -142,6 +144,7 @@ def search_mods_tool(
                 "authors": r["authors"].split(",") if r["authors"] else [],
                 "max_ksp_version": r["max_ksp_version"],
                 "latest_version": r["latest_version"],
+                "last_updated_at": r["last_updated_at"],
                 "download_count": r["download_count"],
                 "download_size": r["download_size"],
                 "install_size": r["install_size"],
@@ -165,7 +168,7 @@ def get_mod_tool(
         categories: Which detail categories to include. Defaults to ["metadata"].
                     Available categories:
                     - "metadata": name, abstract, authors, tags, license, version info
-                      (max_ksp_version, latest_version), download_count, resources
+                      (max_ksp_version, latest_version, last_updated_at), download_count, resources
                     - "relations": depends, recommends, suggests, conflicts, provides
                     - "install": install directives
                     - "versions": full version history with per-version KSP compatibility
@@ -173,6 +176,7 @@ def get_mod_tool(
 
     Returns an error object if the mod is not found.
     """
+    _ensure_harvested()
     if categories is None:
         categories = ["metadata"]
     cats = set(categories)
@@ -195,6 +199,8 @@ def get_mod_tool(
                 "ksp_version_exact": v["ksp_version_exact"],
                 "ksp_version_max":   v["ksp_version_max"],
                 "release_date":      v["release_date"],
+                "download_size":     v["download_size"],
+                "install_size":      v["install_size"],
             }
             for v in versions
         ]
@@ -211,6 +217,7 @@ def get_mod_tool(
         result["license"]          = raw.get("license")
         result["max_ksp_version"]  = row["max_ksp_version"]
         result["latest_version"]   = row["latest_version"]
+        result["last_updated_at"]  = row["last_updated_at"]
         result["download_count"]   = row["download_count"]
         result["resources"]        = raw.get("resources")
 
@@ -230,6 +237,8 @@ def get_mod_tool(
                 "ksp_version_exact": v["ksp_version_exact"],
                 "ksp_version_max":   v["ksp_version_max"],
                 "release_date":      v["release_date"],
+                "download_size":     v["download_size"],
+                "install_size":      v["install_size"],
             }
             for v in versions
         ]
@@ -247,6 +256,7 @@ def list_tags_tool(limit: int = 50) -> str:
 
     Returns JSON list of {tag, count} objects.
     """
+    _ensure_harvested()
     conn = _get_conn()
     try:
         tags = list_tags(conn)
@@ -267,16 +277,19 @@ def index_status() -> str:
     Reports total mod count, number with download data, number with tags,
     and when the index was last harvested.
     """
+    _ensure_harvested()
     if not DB_PATH.exists():
         return json.dumps({"status": "not_initialized", "message": "No index yet. Call refresh_index to build it."})
 
     conn = _get_conn()
     try:
-        total       = get_mod_count(conn)
-        with_counts = conn.execute("SELECT count(*) FROM mods WHERE download_count IS NOT NULL").fetchone()[0]
-        with_tags   = conn.execute("SELECT count(*) FROM mods WHERE tags IS NOT NULL").fetchone()[0]
-        latest_pass = conn.execute("SELECT max(pass1_at) FROM mods").fetchone()[0]
-        etag_row    = conn.execute("SELECT value FROM meta WHERE key='etag'").fetchone()
+        total            = get_mod_count(conn)
+        with_counts      = conn.execute("SELECT count(*) FROM mods WHERE download_count IS NOT NULL").fetchone()[0]
+        with_tags        = conn.execute("SELECT count(*) FROM mods WHERE tags IS NOT NULL").fetchone()[0]
+        with_dl_size     = conn.execute("SELECT count(*) FROM mods WHERE download_size IS NOT NULL").fetchone()[0]
+        with_inst_size   = conn.execute("SELECT count(*) FROM mods WHERE install_size IS NOT NULL").fetchone()[0]
+        latest_pass      = conn.execute("SELECT max(pass1_at) FROM mods").fetchone()[0]
+        etag_row         = conn.execute("SELECT value FROM meta WHERE key='etag'").fetchone()
     finally:
         conn.close()
 
@@ -285,12 +298,22 @@ def index_status() -> str:
         "total_mods": total,
         "mods_with_download_count": with_counts,
         "mods_with_tags": with_tags,
+        "mods_with_download_size": with_dl_size,
+        "mods_with_install_size": with_inst_size,
         "last_harvested": latest_pass,
         "etag": etag_row[0] if etag_row else None,
     })
 
 
 _quiet_console = Console(quiet=True)
+_harvest_done = False
+
+
+def _ensure_harvested() -> None:
+    global _harvest_done
+    if not _harvest_done:
+        run_harvest(console=_quiet_console)
+        _harvest_done = True
 
 
 @mcp.tool()
@@ -306,7 +329,9 @@ def refresh_index(force: bool = False) -> str:
 
     Returns JSON with harvest result: status ("skipped" or "updated") and stats.
     """
+    global _harvest_done
     result = run_harvest(force=force, console=_quiet_console)
+    _harvest_done = True
     return json.dumps(result)
 
 
@@ -315,7 +340,6 @@ def refresh_index(force: bool = False) -> str:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    run_harvest(console=_quiet_console)
     mcp.run(transport="stdio")
 
 
