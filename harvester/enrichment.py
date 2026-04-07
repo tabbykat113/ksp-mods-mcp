@@ -22,8 +22,9 @@ import httpx
 GITHUB_TTL_DAYS    = 7
 SPACEDOCK_TTL_DAYS = 3   # download counts change more frequently
 
-README_PREVIEW_LIMIT = 2000
+PREVIEW_LIMIT = 2000
 README_TRUNCATION_NOTE = "\n\n[README truncated. Use GitHub tools or visit the repository for the full content.]"
+RELEASE_NOTES_TRUNCATION_NOTE = "\n\n[Release notes truncated. Use GitHub tools or visit the repository for the full content.]"
 
 GITHUB_HEADERS = {"Accept": "application/vnd.github+json"}
 if token := os.environ.get("GITHUB_TOKEN"):
@@ -85,8 +86,8 @@ def _fetch_github(client: httpx.Client, owner: str, repo: str) -> dict:
         content = data.get("content", "")
         if data.get("encoding") == "base64":
             content = base64.b64decode(content).decode("utf-8", errors="replace")
-        if len(content) > README_PREVIEW_LIMIT:
-            content = content[:README_PREVIEW_LIMIT] + README_TRUNCATION_NOTE
+        if len(content) > PREVIEW_LIMIT:
+            content = content[:PREVIEW_LIMIT] + README_TRUNCATION_NOTE
         result["readme_preview"] = content
 
     # Latest release
@@ -101,7 +102,10 @@ def _fetch_github(client: httpx.Client, owner: str, repo: str) -> dict:
             rel = releases[0]
             result["latest_release_version"] = rel.get("tag_name")
             result["latest_release_date"]    = rel.get("published_at")
-            result["latest_release_notes"]   = rel.get("body")
+            notes = rel.get("body") or ""
+            if len(notes) > PREVIEW_LIMIT:
+                notes = notes[:PREVIEW_LIMIT] + RELEASE_NOTES_TRUNCATION_NOTE
+            result["latest_release_notes"]   = notes or None
 
     return result
 
