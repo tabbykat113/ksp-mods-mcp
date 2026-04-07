@@ -53,6 +53,34 @@ CREATE TABLE IF NOT EXISTS mod_versions (
 );
 
 CREATE INDEX IF NOT EXISTS idx_mod_versions_identifier ON mod_versions (identifier);
+
+CREATE TABLE IF NOT EXISTS github_cache (
+    identifier              TEXT PRIMARY KEY,
+    fetched_at              TEXT NOT NULL,
+    stars                   INTEGER,
+    forks                   INTEGER,
+    open_issues             INTEGER,
+    language                TEXT,
+    pushed_at               TEXT,
+    topics                  TEXT,
+    readme_preview          TEXT,
+    latest_release_version  TEXT,
+    latest_release_date     TEXT,
+    latest_release_notes    TEXT
+);
+
+CREATE TABLE IF NOT EXISTS spacedock_cache (
+    identifier          TEXT PRIMARY KEY,
+    fetched_at          TEXT NOT NULL,
+    spacedock_id        INTEGER,
+    downloads           INTEGER,
+    followers           INTEGER,
+    short_description   TEXT,
+    description         TEXT,
+    latest_version      TEXT,
+    latest_version_date TEXT,
+    version_count       INTEGER
+);
 """
 
 MIGRATIONS = [

@@ -41,7 +41,7 @@ Use `ksp-mods-mcp` as the command. The server communicates over stdio.
 | Tool | Description |
 |---|---|
 | `search_mods_tool` | Search by name/author regex, tags, KSP version compatibility. Paginated. |
-| `get_mod_tool` | Details for a mod by identifier. Selectable categories: metadata, relations, install, versions, raw. |
+| `get_mod_tool` | Details for a mod by identifier. Selectable categories: metadata, relations, install, versions, github, spacedock, raw. |
 | `list_tags_tool` | All tags in the index ranked by mod count. |
 | `index_status` | DB stats and last harvest timestamp. |
 | `refresh_index` | Re-harvest the CKAN-meta archive. No-op if unchanged; use `force=True` to rebuild. |

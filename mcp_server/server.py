@@ -28,6 +28,7 @@ from harvester.db import (
     open_db,
     search_mods,
 )
+from harvester.enrichment import get_github_cache, get_spacedock_cache
 from harvester.harvest import run_harvest
 
 mcp = FastMCP(
@@ -159,6 +160,7 @@ def search_mods_tool(
 def get_mod_tool(
     identifier: str,
     categories: list[str] | None = None,
+    force_refresh: bool = False,
 ) -> str:
     """Get details for a KSP mod by its CKAN identifier.
 
@@ -172,7 +174,13 @@ def get_mod_tool(
                     - "relations": depends, recommends, suggests, conflicts, provides
                     - "install": install directives
                     - "versions": full version history with per-version KSP compatibility
+                    - "github": GitHub repo stats, README preview, and latest release.
+                      Lazily fetched and cached (TTL 7 days). Includes fetched_at timestamp.
+                    - "spacedock": SpaceDock stats, descriptions, and latest version info.
+                      Lazily fetched and cached (TTL 3 days). Includes fetched_at timestamp.
                     - "raw": full raw CKAN JSON (superset of all above)
+        force_refresh: If True, bypass the cache TTL and re-fetch all requested
+                       enrichment categories (github, spacedock) from their sources.
 
     Returns an error object if the mod is not found.
     """
@@ -187,6 +195,12 @@ def get_mod_tool(
         if row is None:
             return json.dumps({"error": f"Mod '{identifier}' not found."})
         versions = get_mod_versions(conn, identifier) if "versions" in cats or "raw" in cats else []
+
+        raw = json.loads(row["ckan_json"])
+        resources = raw.get("resources") or {}
+
+        github_data    = get_github_cache(conn, identifier, resources, force_refresh) if "github" in cats else None
+        spacedock_data = get_spacedock_cache(conn, identifier, resources, force_refresh) if "spacedock" in cats else None
     finally:
         conn.close()
 
@@ -206,7 +220,6 @@ def get_mod_tool(
         ]
         return json.dumps(data, indent=2)
 
-    raw = json.loads(row["ckan_json"])
     result: dict = {"identifier": identifier}
 
     if "metadata" in cats:
@@ -219,7 +232,7 @@ def get_mod_tool(
         result["latest_version"]   = row["latest_version"]
         result["last_updated_at"]  = row["last_updated_at"]
         result["download_count"]   = row["download_count"]
-        result["resources"]        = raw.get("resources")
+        result["resources"]        = resources
 
     if "relations" in cats:
         for key in ("depends", "recommends", "suggests", "conflicts", "provides"):
@@ -242,6 +255,44 @@ def get_mod_tool(
             }
             for v in versions
         ]
+
+    if "github" in cats:
+        if github_data is None:
+            result["github"] = {"error": "No GitHub URL found for this mod."}
+        elif "_fetch_error" in github_data:
+            result["github"] = {"error": github_data["_fetch_error"]}
+        else:
+            result["github"] = {
+                "fetched_at":              github_data.get("fetched_at"),
+                "stars":                   github_data.get("stars"),
+                "forks":                   github_data.get("forks"),
+                "open_issues":             github_data.get("open_issues"),
+                "language":                github_data.get("language"),
+                "pushed_at":               github_data.get("pushed_at"),
+                "topics":                  github_data["topics"].split(",") if github_data.get("topics") else [],
+                "readme_preview":          github_data.get("readme_preview"),
+                "latest_release_version":  github_data.get("latest_release_version"),
+                "latest_release_date":     github_data.get("latest_release_date"),
+                "latest_release_notes":    github_data.get("latest_release_notes"),
+            }
+
+    if "spacedock" in cats:
+        if spacedock_data is None:
+            result["spacedock"] = {"error": "No SpaceDock URL found for this mod."}
+        elif "_fetch_error" in spacedock_data:
+            result["spacedock"] = {"error": spacedock_data["_fetch_error"]}
+        else:
+            result["spacedock"] = {
+                "fetched_at":         spacedock_data.get("fetched_at"),
+                "spacedock_id":       spacedock_data.get("spacedock_id"),
+                "downloads":          spacedock_data.get("downloads"),
+                "followers":          spacedock_data.get("followers"),
+                "short_description":  spacedock_data.get("short_description"),
+                "description":        spacedock_data.get("description"),
+                "latest_version":     spacedock_data.get("latest_version"),
+                "latest_version_date": spacedock_data.get("latest_version_date"),
+                "version_count":      spacedock_data.get("version_count"),
+            }
 
     return json.dumps(result, indent=2)
 

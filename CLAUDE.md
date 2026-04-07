@@ -10,11 +10,12 @@ A uv Python project with two components:
 
 ```
 harvester/
-  db.py       — SQLite schema, all query/write functions, KSP version logic
-  harvest.py  — tar.gz streaming, parsing loop, CLI entry point
+  db.py         — SQLite schema, all query/write functions, KSP version logic
+  harvest.py    — tar.gz streaming, parsing loop, CLI entry point
+  enrichment.py — lazy GitHub/SpaceDock fetchers, cache read/write, TTL logic
 mcp_server/
-  server.py   — FastMCP tool definitions, error handling wrapper
-explore_mod.py — standalone exploration script (not part of the package)
+  server.py     — FastMCP tool definitions, error handling wrapper
+explore_mod.py  — standalone exploration script (not part of the package)
 ```
 
 ## Key design decisions
@@ -42,16 +43,28 @@ mod_versions  (identifier, mod_version PK,
                ksp_version_exact, ksp_version_min,
                ksp_version_max, release_date,
                download_size, install_size)
+github_cache  (identifier PK, fetched_at,
+               stars, forks, open_issues, language, pushed_at,
+               topics, readme_preview,
+               latest_release_version, latest_release_date, latest_release_notes)
+spacedock_cache (identifier PK, fetched_at,
+                 spacedock_id, downloads, followers,
+                 short_description, description,
+                 latest_version, latest_version_date, version_count)
 ```
 
-`tags` and `authors` are stored as comma-separated strings.
-`pass1_at` and `last_updated_at` are ISO timestamps.
+`tags`, `authors`, and `topics` are stored as comma-separated strings.
+`pass1_at`, `last_updated_at`, and `fetched_at` are ISO timestamps.
 `last_updated_at` is the `release_date` of the latest version (null if no version had one).
+
+`github_cache` and `spacedock_cache` are populated lazily on `get_mod` calls.
+TTL: 7 days for GitHub, 3 days for SpaceDock. `force_refresh=True` on `get_mod` bypasses TTL.
+Cache is NOT automatically invalidated when CKAN data changes — see TODO.md.
 
 ## MCP tools
 
 - `search_mods_tool` — name/author regex, tags + tags_mode (and/or), ksp_versions, sort_by (`downloads`, `name`, `download_size`, `install_size`, `updated`), limit/offset
-- `get_mod_tool` — details by identifier; selectable categories: metadata, relations, install, versions (includes per-version sizes), raw
+- `get_mod_tool` — details by identifier; selectable categories: metadata, relations, install, versions (includes per-version sizes), github, spacedock, raw; `force_refresh` bypasses enrichment TTL
 - `list_tags_tool` — all tags ranked by mod count
 - `index_status` — DB stats (mod count, download counts, tags, size coverage), last harvest time, etag
 - `refresh_index` — re-harvest CKAN-meta archive (ETag-aware, force option)
