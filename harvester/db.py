@@ -19,6 +19,10 @@ def _default_db_path() -> Path:
 
 DB_PATH = _default_db_path()
 
+# Bump this whenever a schema change requires a forced re-harvest.
+# open_db() will auto-trigger --force harvest if the stored version differs.
+SCHEMA_VERSION = 2
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
@@ -38,6 +42,7 @@ CREATE TABLE IF NOT EXISTS mods (
     download_size    INTEGER,
     install_size     INTEGER,
     download_count   INTEGER,
+    download_url     TEXT,
     pass1_at         TEXT
 );
 
@@ -95,6 +100,7 @@ MIGRATIONS = [
     "ALTER TABLE mods ADD COLUMN last_updated_at TEXT",
     "ALTER TABLE mod_versions ADD COLUMN download_size INTEGER",
     "ALTER TABLE mod_versions ADD COLUMN install_size INTEGER",
+    "ALTER TABLE mods ADD COLUMN download_url TEXT",
 ]
 
 
@@ -117,6 +123,20 @@ def _migrate(conn: sqlite3.Connection) -> None:
             pass  # column already exists / already applied
 
 
+def needs_schema_upgrade(conn: sqlite3.Connection) -> bool:
+    """Return True if the stored schema version is older than SCHEMA_VERSION."""
+    row = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
+    stored = int(row[0]) if row else 0
+    return stored < SCHEMA_VERSION
+
+
+def set_schema_version(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        "INSERT OR REPLACE INTO meta VALUES ('schema_version', ?)",
+        (str(SCHEMA_VERSION),),
+    )
+
+
 def get_etag(conn: sqlite3.Connection) -> str | None:
     row = conn.execute("SELECT value FROM meta WHERE key='etag'").fetchone()
     return row[0] if row else None
@@ -132,7 +152,8 @@ def apply_mod_data(conn: sqlite3.Connection, mod_data: dict[str, dict]) -> None:
     mod_data maps identifier → dict with keys:
       ckan_json, name, abstract, tags (list|None), authors (list|None),
       download_size (int|None), install_size (int|None),
-      latest_version (str|None), last_updated_at (str|None), pass1_at (str ISO).
+      download_url (str|None), latest_version (str|None),
+      last_updated_at (str|None), pass1_at (str ISO).
     """
     rows = [
         (
@@ -145,6 +166,7 @@ def apply_mod_data(conn: sqlite3.Connection, mod_data: dict[str, dict]) -> None:
             d["download_size"],
             d["install_size"],
             None,               # download_count applied separately
+            d["download_url"],
             d["latest_version"],
             d["last_updated_at"] or None,
             d["pass1_at"],
@@ -155,8 +177,9 @@ def apply_mod_data(conn: sqlite3.Connection, mod_data: dict[str, dict]) -> None:
         """
         INSERT OR REPLACE INTO mods
             (identifier, ckan_json, name, abstract, tags, authors,
-             download_size, install_size, download_count, latest_version, last_updated_at, pass1_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             download_size, install_size, download_count, download_url,
+             latest_version, last_updated_at, pass1_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         rows,
     )
@@ -272,6 +295,7 @@ def _build_where(
     tags_mode: str,
     ksp_filter_ids: set[str] | None,
     author_pattern: str | None = None,
+    cached_ids: set[str] | None = None,
 ) -> tuple[str, list]:
     """Build WHERE clause and params for mod searches."""
     wheres: list[str] = []
@@ -300,6 +324,14 @@ def _build_where(
             wheres.append(f"identifier IN ({placeholders})")
             params += list(ksp_filter_ids)
 
+    if cached_ids is not None:
+        if not cached_ids:
+            wheres.append("0")  # empty set → no results
+        else:
+            placeholders = ",".join("?" * len(cached_ids))
+            wheres.append(f"identifier IN ({placeholders})")
+            params += list(cached_ids)
+
     where_clause = ("WHERE " + " AND ".join(wheres)) if wheres else ""
     return where_clause, params
 
@@ -314,13 +346,15 @@ def search_mods(
     sort_by: str = "downloads",
     limit: int = 20,
     offset: int = 0,
+    cached_ids: set[str] | None = None,
 ) -> list[sqlite3.Row]:
     """
     Search mods by name regex, tags, author regex, and/or KSP version compatibility.
     - sort_by: "downloads" (default) or "name"
+    - cached_ids: if provided, only return mods whose identifier is in this set
     """
     ksp_ids = identifiers_supporting_ksp(conn, ksp_versions) if ksp_versions else None
-    where_clause, params = _build_where(name_pattern, tags, tags_mode, ksp_ids, author_pattern)
+    where_clause, params = _build_where(name_pattern, tags, tags_mode, ksp_ids, author_pattern, cached_ids)
     parts = sort_by.lower().split()
     key, direction = parts[0], parts[1] if len(parts) > 1 else None
 
@@ -342,7 +376,7 @@ def search_mods(
     return conn.execute(
         f"""
         SELECT identifier, name, abstract, tags, authors, max_ksp_version, latest_version,
-               last_updated_at, download_count, download_size, install_size
+               last_updated_at, download_count, download_size, install_size, download_url
         FROM mods
         {where_clause}
         ORDER BY {order}
@@ -359,9 +393,10 @@ def count_search(
     tags_mode: str = "and",
     ksp_versions: list[str] | None = None,
     author_pattern: str | None = None,
+    cached_ids: set[str] | None = None,
 ) -> int:
     ksp_ids = identifiers_supporting_ksp(conn, ksp_versions) if ksp_versions else None
-    where_clause, params = _build_where(name_pattern, tags, tags_mode, ksp_ids, author_pattern)
+    where_clause, params = _build_where(name_pattern, tags, tags_mode, ksp_ids, author_pattern, cached_ids)
     return conn.execute(
         f"SELECT count(*) FROM mods {where_clause}", params
     ).fetchone()[0]
@@ -456,7 +491,7 @@ def get_recommendations(
     all_rows = conn.execute(
         "SELECT identifier, ckan_json, name, abstract, tags, authors, "
         "max_ksp_version, latest_version, last_updated_at, download_count, "
-        "download_size, install_size FROM mods"
+        "download_size, install_size, download_url FROM mods"
     ).fetchall()
 
     # Build lookup: identifier → row (needed to hydrate results later)
@@ -513,6 +548,7 @@ def get_recommendations(
             "download_count":  row["download_count"],
             "download_size":   row["download_size"],
             "install_size":    row["install_size"],
+            "download_url":    row["download_url"],
             "category":        rel["category"],
             "related_mods":    sorted(rel["related_mods"]),
         })

@@ -18,6 +18,7 @@ from pathlib import Path
 from mcp.server.fastmcp import FastMCP
 from rich.console import Console
 
+from harvester.ckan_cache import cache_dir_exists, cached_identifiers, is_cached
 from harvester.db import (
     DB_PATH,
     RELATION_PRIORITY,
@@ -89,6 +90,7 @@ def search_mods_tool(
     tags_mode: str = "and",
     ksp_versions: list[str] | None = None,
     sort_by: str = "downloads",
+    cached_only: bool = False,
     limit: int = 20,
     offset: int = 0,
 ) -> str:
@@ -111,12 +113,15 @@ def search_mods_tool(
         sort_by: Sort order — "downloads" (default), "downloads asc", "name", "name desc",
                  "download_size", "download_size asc", "install_size", "install_size asc",
                  "updated", "updated asc".
+        cached_only: If True, only return mods whose ZIP is present in the local CKAN
+                     download cache. Requires CKAN to have been used to download mods.
         limit: Number of results per page (default 20, max 100).
         offset: Pagination offset (default 0).
 
     Returns JSON with keys: total, offset, limit, results.
     Each result has: identifier, name, abstract, tags, authors, max_ksp_version, latest_version,
     last_updated_at, download_count, download_size (bytes), install_size (bytes).
+    Results include is_cached: true only for mods present in the CKAN download cache.
     """
     _ensure_harvested()
     if tags_mode not in ("and", "or"):
@@ -124,36 +129,57 @@ def search_mods_tool(
     if sort_by.split()[0] not in ("downloads", "name", "download_size", "install_size", "updated"):
         sort_by = "downloads"
     limit = min(limit, 100)
+
+    # Resolve cached identifiers if the filter is active or cache exists
+    have_cache = cache_dir_exists()
+    filter_ids: set[str] | None = None
+    if cached_only:
+        if not have_cache:
+            return json.dumps({"error": "CKAN download cache directory not found. Set CKAN_DOWNLOAD_CACHE env var or ensure CKAN has been run."})
+        # Load all download_urls to build the cached set
+        conn = _get_conn()
+        try:
+            url_rows = conn.execute("SELECT identifier, download_url FROM mods WHERE download_url IS NOT NULL").fetchall()
+        finally:
+            conn.close()
+        url_map = {r["identifier"]: r["download_url"] for r in url_rows}
+        filter_ids = cached_identifiers(url_map)
+
     conn = _get_conn()
     try:
         rows  = search_mods(conn, name_pattern=name, tags=tags, tags_mode=tags_mode,
                             ksp_versions=ksp_versions, author_pattern=author,
-                            sort_by=sort_by, limit=limit, offset=offset)
+                            sort_by=sort_by, limit=limit, offset=offset,
+                            cached_ids=filter_ids)
         total = count_search(conn, name_pattern=name, tags=tags, tags_mode=tags_mode,
-                             ksp_versions=ksp_versions, author_pattern=author)
+                             ksp_versions=ksp_versions, author_pattern=author,
+                             cached_ids=filter_ids)
     finally:
         conn.close()
+
+    def _row_dict(r) -> dict:
+        d = {
+            "identifier": r["identifier"],
+            "name": r["name"],
+            "abstract": r["abstract"],
+            "tags": r["tags"].split(",") if r["tags"] else [],
+            "authors": r["authors"].split(",") if r["authors"] else [],
+            "max_ksp_version": r["max_ksp_version"],
+            "latest_version": r["latest_version"],
+            "last_updated_at": r["last_updated_at"],
+            "download_count": r["download_count"],
+            "download_size": r["download_size"],
+            "install_size": r["install_size"],
+        }
+        if have_cache and is_cached(r["download_url"]):
+            d["is_cached"] = True
+        return d
 
     return json.dumps({
         "total": total,
         "offset": offset,
         "limit": limit,
-        "results": [
-            {
-                "identifier": r["identifier"],
-                "name": r["name"],
-                "abstract": r["abstract"],
-                "tags": r["tags"].split(",") if r["tags"] else [],
-                "authors": r["authors"].split(",") if r["authors"] else [],
-                "max_ksp_version": r["max_ksp_version"],
-                "latest_version": r["latest_version"],
-                "last_updated_at": r["last_updated_at"],
-                "download_count": r["download_count"],
-                "download_size": r["download_size"],
-                "install_size": r["install_size"],
-            }
-            for r in rows
-        ],
+        "results": [_row_dict(r) for r in rows],
     })
 
 
@@ -185,6 +211,7 @@ def get_mod_tool(
                        enrichment categories (github, spacedock) from their sources.
 
     Returns an error object if the mod is not found.
+    Metadata results include is_cached: true if the mod's ZIP is in the CKAN download cache.
     """
     _ensure_harvested()
     if categories is None:
@@ -235,6 +262,8 @@ def get_mod_tool(
         result["last_updated_at"]  = row["last_updated_at"]
         result["download_count"]   = row["download_count"]
         result["resources"]        = resources
+        if cache_dir_exists() and is_cached(row["download_url"]):
+            result["is_cached"] = True
 
     if "relations" in cats:
         for key in ("depends", "recommends", "suggests", "conflicts", "provides"):
@@ -366,28 +395,33 @@ def get_recommendations_tool(
     total = len(results)
     page  = results[offset: offset + limit]
 
+    have_cache = cache_dir_exists()
+
+    def _rec_dict(r: dict) -> dict:
+        d = {
+            "identifier":      r["identifier"],
+            "name":            r["name"],
+            "abstract":        r["abstract"],
+            "tags":            r["tags"].split(",") if r["tags"] else [],
+            "authors":         r["authors"].split(",") if r["authors"] else [],
+            "max_ksp_version": r["max_ksp_version"],
+            "latest_version":  r["latest_version"],
+            "last_updated_at": r["last_updated_at"],
+            "download_count":  r["download_count"],
+            "download_size":   r["download_size"],
+            "install_size":    r["install_size"],
+            "category":        r["category"],
+            "related_mods":    r["related_mods"],
+        }
+        if have_cache and is_cached(r.get("download_url")):
+            d["is_cached"] = True
+        return d
+
     return json.dumps({
         "total":   total,
         "offset":  offset,
         "limit":   limit,
-        "results": [
-            {
-                "identifier":      r["identifier"],
-                "name":            r["name"],
-                "abstract":        r["abstract"],
-                "tags":            r["tags"].split(",") if r["tags"] else [],
-                "authors":         r["authors"].split(",") if r["authors"] else [],
-                "max_ksp_version": r["max_ksp_version"],
-                "latest_version":  r["latest_version"],
-                "last_updated_at": r["last_updated_at"],
-                "download_count":  r["download_count"],
-                "download_size":   r["download_size"],
-                "install_size":    r["install_size"],
-                "category":        r["category"],
-                "related_mods":    r["related_mods"],
-            }
-            for r in page
-        ],
+        "results": [_rec_dict(r) for r in page],
     })
 
 
@@ -447,6 +481,7 @@ def index_status() -> str:
         "mods_with_install_size": with_inst_size,
         "last_harvested": latest_pass,
         "etag": etag_row[0] if etag_row else None,
+        "ckan_cache_available": cache_dir_exists(),
     })
 
 
