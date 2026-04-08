@@ -225,10 +225,12 @@ def stream_and_parse(client: httpx.Client, stored_etag: str | None, *, console: 
                     else:
                         take = mv_str > current_md["latest_version_raw"]
                     if take:
-                        # download is a list of URLs in the spec; take the first
+                        # download may be a string or a list of mirror URLs;
+                        # store all as newline-separated so cache detection can
+                        # check every mirror (user may have downloaded via any of them)
                         raw_download = data.get("download")
                         if isinstance(raw_download, list):
-                            download_url = raw_download[0] if raw_download else None
+                            download_url = "\n".join(raw_download) if raw_download else None
                         else:
                             download_url = raw_download  # string or None
                         mod_data[identifier] = {

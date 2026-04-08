@@ -83,20 +83,24 @@ def cache_dir_exists() -> bool:
 
 
 def is_cached(download_url: str | None) -> bool:
-    """Return True if the given download URL's file is present in the CKAN cache."""
+    """Return True if any of the mod's download URLs are present in the CKAN cache.
+
+    download_url may be a single URL or multiple newline-separated mirror URLs.
+    """
     if not download_url:
         return False
-    return _url_hash(download_url) in _get_cache_hashes()
+    hashes = _get_cache_hashes()
+    return any(_url_hash(u) in hashes for u in download_url.splitlines() if u)
 
 
 def cached_identifiers(download_urls: dict[str, str | None]) -> set[str]:
     """
-    Given a mapping of identifier → download_url, return the set of identifiers
-    whose download URL is present in the CKAN cache.
+    Given a mapping of identifier → download_url (single or newline-separated mirrors),
+    return the set of identifiers whose download is present in the CKAN cache.
     """
     hashes = _get_cache_hashes()
     return {
         ident
         for ident, url in download_urls.items()
-        if url and _url_hash(url) in hashes
+        if url and any(_url_hash(u) in hashes for u in url.splitlines() if u)
     }

@@ -21,7 +21,7 @@ DB_PATH = _default_db_path()
 
 # Bump this whenever a schema change requires a forced re-harvest.
 # open_db() will auto-trigger --force harvest if the stored version differs.
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
