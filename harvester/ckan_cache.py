@@ -17,6 +17,7 @@ import hashlib
 import os
 import sys
 from pathlib import Path
+from urllib.parse import unquote
 
 
 def _default_cache_dir() -> Path:
@@ -28,8 +29,12 @@ def _default_cache_dir() -> Path:
 
 
 def _url_hash(url: str) -> str:
-    """Return the 8-char hex prefix CKAN uses for a given download URL."""
-    digest = hashlib.sha1(url.encode("utf-8")).hexdigest()
+    """Return the 8-char hex prefix CKAN uses for a given download URL.
+
+    CKAN hashes the percent-decoded form of the URL, so we must unquote
+    before hashing (e.g. 'Near%20Future%20Spacecraft' → 'Near Future Spacecraft').
+    """
+    digest = hashlib.sha1(unquote(url).encode("utf-8")).hexdigest()
     return digest[:8].upper()
 
 
