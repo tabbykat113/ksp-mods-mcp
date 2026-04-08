@@ -42,6 +42,7 @@ Use `ksp-mods-mcp` as the command. The server communicates over stdio.
 |---|---|
 | `search_mods_tool` | Search by name/author regex, tags, KSP version compatibility. Paginated. |
 | `get_mod_tool` | Details for a mod by identifier. Selectable categories: metadata, relations, install, versions, github, spacedock, raw. |
+| `get_recommendations_tool` | Related mods via dependency/recommendation relationships. Forward and reverse. Paginated. |
 | `list_tags_tool` | All tags in the index ranked by mod count. |
 | `index_status` | DB stats and last harvest timestamp. |
 | `refresh_index` | Re-harvest the CKAN-meta archive. No-op if unchanged; use `force=True` to rebuild. |
@@ -53,6 +54,16 @@ Use `ksp-mods-mcp` as the command. The server communicates over stdio.
 - `tags` + `tags_mode` — `"and"` (all tags required) or `"or"` (any tag)
 - `ksp_versions` — e.g. `["1.12"]`; matches any mod with a release supporting that version
 - `sort_by` — `"downloads"` (default), `"downloads asc"`, `"name"`, `"name desc"`, `"download_size"`, `"install_size"`, `"updated"`, `"updated asc"`
+- `limit` / `offset` — pagination (max 100 per page)
+
+### Recommendations options
+
+- `identifiers` — list of CKAN mod identifiers to find relations for
+- `categories` — which relationship types to include (default: `depends`, `recommends`, `suggests`):
+  - Forward: `depends`, `supports`, `recommends`, `suggests`
+  - Reverse: `depends_by`, `supported_by`, `recommended_by`, `suggested_by`
+  - Pass `["all"]` to include all categories
+- Results are deduplicated: if the same mod appears via multiple sources or categories, the highest-priority category wins and all source mods are listed in `related_mods`
 - `limit` / `offset` — pagination (max 100 per page)
 
 ## Development

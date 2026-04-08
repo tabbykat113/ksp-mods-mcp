@@ -65,6 +65,7 @@ Cache is NOT automatically invalidated when CKAN data changes — see TODO.md.
 
 - `search_mods_tool` — name/author regex, tags + tags_mode (and/or), ksp_versions, sort_by (`downloads`, `name`, `download_size`, `install_size`, `updated`), limit/offset
 - `get_mod_tool` — details by identifier; selectable categories: metadata, relations, install, versions (includes per-version sizes), github, spacedock, raw; `force_refresh` bypasses enrichment TTL
+- `get_recommendations_tool` — related mods for a list of identifiers; categories: `depends`, `supports`, `recommends`, `suggests` (forward) + `depends_by`, `supported_by`, `recommended_by`, `suggested_by` (reverse); default: depends/recommends/suggests; `["all"]` expands to all 8; deduplicates by highest-priority category; each result includes `category` + `related_mods` (source identifiers); paginated
 - `list_tags_tool` — all tags ranked by mod count
 - `index_status` — DB stats (mod count, download counts, tags, size coverage), last harvest time, etag
 - `refresh_index` — re-harvest CKAN-meta archive (ETag-aware, force option)
