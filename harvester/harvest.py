@@ -31,8 +31,10 @@ from .db import (
     apply_max_ksp_versions,
     get_etag,
     get_mod_count,
+    needs_schema_upgrade,
     open_db,
     set_etag,
+    set_schema_version,
     upsert_mod_version,
 )
 
@@ -223,6 +225,14 @@ def stream_and_parse(client: httpx.Client, stored_etag: str | None, *, console: 
                     else:
                         take = mv_str > current_md["latest_version_raw"]
                     if take:
+                        # download may be a string or a list of mirror URLs;
+                        # store all as newline-separated so cache detection can
+                        # check every mirror (user may have downloaded via any of them)
+                        raw_download = data.get("download")
+                        if isinstance(raw_download, list):
+                            download_url = "\n".join(raw_download) if raw_download else None
+                        else:
+                            download_url = raw_download  # string or None
                         mod_data[identifier] = {
                             "ckan_json":    text,
                             "name":         data.get("name"),
@@ -231,6 +241,7 @@ def stream_and_parse(client: httpx.Client, stored_etag: str | None, *, console: 
                             "authors":      raw_authors,
                             "download_size": data.get("download_size"),
                             "install_size": data.get("install_size"),
+                            "download_url": download_url,
                             "latest_version": str(mod_version) if mod_version else None,
                             "latest_version_raw": mv_str,
                             "last_updated_at": release_date,  # None if unset
@@ -287,6 +298,7 @@ def stream_and_parse(client: httpx.Client, stored_etag: str | None, *, console: 
         if server_etag:
             set_etag(conn, server_etag)
 
+        set_schema_version(conn)
         conn.execute("COMMIT")
         conn.close()
 
@@ -346,6 +358,9 @@ def run_harvest(*, force: bool = False, console: Console | None = None) -> dict:
         console = Console()
 
     conn = open_db()
+    if not force and needs_schema_upgrade(conn):
+        console.print("[yellow]Schema version mismatch — forcing re-harvest.[/yellow]")
+        force = True
     stored_etag = get_etag(conn) if not force else None
     conn.close()
 
