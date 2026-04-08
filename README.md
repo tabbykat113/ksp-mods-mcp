@@ -40,11 +40,12 @@ Use `ksp-mods-mcp` as the command. The server communicates over stdio.
 
 | Tool | Description |
 |---|---|
-| `search_mods_tool` | Search by name/author regex, tags, KSP version compatibility. Paginated. |
+| `search_mods_tool` | Search by name/author regex, tags, KSP version compatibility, cached status. Paginated. |
 | `get_mod_tool` | Details for a mod by identifier. Selectable categories: metadata, relations, install, versions, github, spacedock, raw. |
 | `get_recommendations_tool` | Related mods via dependency/recommendation relationships. Forward and reverse. Paginated. |
 | `list_tags_tool` | All tags in the index ranked by mod count. |
-| `index_status` | DB stats and last harvest timestamp. |
+| `list_parts_tool` | Parts inside a mod's cached ZIP. Three detail levels: summary, basic, long. |
+| `index_status` | DB stats, last harvest timestamp, and whether the CKAN download cache is detected. |
 | `refresh_index` | Re-harvest the CKAN-meta archive. No-op if unchanged; use `force=True` to rebuild. |
 
 ### Search options
@@ -54,6 +55,7 @@ Use `ksp-mods-mcp` as the command. The server communicates over stdio.
 - `tags` + `tags_mode` — `"and"` (all tags required) or `"or"` (any tag)
 - `ksp_versions` — e.g. `["1.12"]`; matches any mod with a release supporting that version
 - `sort_by` — `"downloads"` (default), `"downloads asc"`, `"name"`, `"name desc"`, `"download_size"`, `"install_size"`, `"updated"`, `"updated asc"`
+- `cached_only` — only return mods whose latest-version ZIP is present in the CKAN download cache
 - `limit` / `offset` — pagination (max 100 per page)
 
 ### Recommendations options
@@ -65,6 +67,14 @@ Use `ksp-mods-mcp` as the command. The server communicates over stdio.
   - Pass `["all"]` to include all categories
 - Results are deduplicated: if the same mod appears via multiple sources or categories, the highest-priority category wins and all source mods are listed in `related_mods`
 - `limit` / `offset` — pagination (max 100 per page)
+
+### CKAN download cache integration
+
+If CKAN is installed and has downloaded mods, `is_cached: true` appears on any result whose latest-version ZIP is present in the local download cache. The cache directory is detected automatically (`%LOCALAPPDATA%/CKAN/downloads` on Windows, `$XDG_DATA_HOME/CKAN/downloads` on Linux). Override with the `CKAN_DOWNLOAD_CACHE` environment variable.
+
+**Note:** `is_cached` reflects the *latest* version of a mod. If you have an older version cached but not the latest, the flag will not appear — the cached copy may not match what CKAN would install. If you're pinned to an older KSP version (e.g. 1.8.1) and intentionally keep older mod versions, use the `ksp_versions` filter to find compatible mods and disregard the cached status.
+
+The `list_parts_tool` also requires a cached ZIP to work.
 
 ## Development
 
