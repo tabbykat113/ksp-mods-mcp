@@ -19,6 +19,7 @@ from mcp.server.fastmcp import FastMCP
 from rich.console import Console
 
 from harvester.ckan_cache import cache_dir_exists, cached_identifiers, is_cached
+from harvester.parts import extract_parts
 from harvester.db import (
     DB_PATH,
     RELATION_PRIORITY,
@@ -483,6 +484,55 @@ def index_status() -> str:
         "etag": etag_row[0] if etag_row else None,
         "ckan_cache_available": cache_dir_exists(),
     })
+
+
+@mcp.tool()
+@_tool
+def list_parts_tool(
+    identifier: str,
+    detail: str = "basic",
+) -> str:
+    """List the KSP parts included in a mod's cached download ZIP.
+
+    Only works for mods whose ZIP is present in the local CKAN download cache
+    (i.e., mods you have downloaded via CKAN). Use index_status to check whether
+    ckan_cache_available is true, and search_mods with cached_only=true to find
+    mods that are cached.
+
+    Parts are scanned from GameData/{identifier}/Parts/**/*.cfg inside the ZIP.
+    Bundled dependencies under other GameData/ subdirectories are ignored.
+    Titles are resolved from the mod's English localization file where available.
+
+    Args:
+        identifier: Exact CKAN mod identifier (e.g. "HeatControl", "NearFuturePropulsion").
+        detail: Level of detail to return:
+                - "summary": total part count and breakdown by category (cheapest)
+                - "basic":   per-part name, resolved title, and category (default)
+                - "long":    basic + cost, mass, tech_required, modules (what the part does),
+                             resources (what it uses/carries), bulkhead_profiles
+
+    Returns JSON. On success:
+      summary: {total_parts, categories: {CategoryName: count}}
+      basic/long: {total_parts, categories, parts: [...]}
+    Returns an error object if the mod is not cached or the ZIP cannot be read.
+    """
+    _ensure_harvested()
+    if detail not in ("summary", "basic", "long"):
+        detail = "basic"
+
+    conn = _get_conn()
+    try:
+        row = conn.execute(
+            "SELECT download_url FROM mods WHERE identifier = ?", (identifier,)
+        ).fetchone()
+    finally:
+        conn.close()
+
+    if row is None:
+        return json.dumps({"error": f"Mod '{identifier}' not found in index."})
+
+    result = extract_parts(identifier, row["download_url"], detail=detail)  # type: ignore[arg-type]
+    return json.dumps(result)
 
 
 _quiet_console = Console(quiet=True)
