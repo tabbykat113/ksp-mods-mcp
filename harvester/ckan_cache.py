@@ -86,6 +86,7 @@ def is_cached(download_url: str | None) -> bool:
     """Return True if any of the mod's download URLs are present in the CKAN cache.
 
     download_url may be a single URL or multiple newline-separated mirror URLs.
+    Only the latest version's URLs are checked — an older cached ZIP does not count.
     """
     if not download_url:
         return False
