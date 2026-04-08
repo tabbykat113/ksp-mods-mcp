@@ -1,3 +1,4 @@
+import json
 import os
 import sqlite3
 import sys
@@ -382,6 +383,145 @@ def get_mod_versions(conn: sqlite3.Connection, identifier: str) -> list[sqlite3.
         """,
         (identifier,),
     ).fetchall()
+
+
+RELATION_PRIORITY: dict[str, int] = {
+    "depends":       0,
+    "supports":      1,
+    "recommends":    2,
+    "suggests":      3,
+    "depends_by":    4,
+    "supported_by":  5,
+    "recommended_by": 6,
+    "suggested_by":  7,
+}
+
+# Map from CKAN JSON field name → forward category name
+_FORWARD_FIELDS = {
+    "depends":    "depends",
+    "recommends": "recommends",
+    "suggests":   "suggests",
+    "supports":   "supports",
+}
+
+# Map from CKAN JSON field name → reverse category name
+_REVERSE_FIELDS = {
+    "depends":    "depends_by",
+    "recommends": "recommended_by",
+    "suggests":   "suggested_by",
+    "supports":   "supported_by",
+}
+
+
+def get_recommendations(
+    conn: sqlite3.Connection,
+    identifiers: list[str],
+    categories: list[str],
+) -> list[dict]:
+    """
+    Return a deduplicated list of mods related to the given identifiers.
+
+    For each result:
+      - identifier, name, abstract, tags, authors, max_ksp_version, latest_version,
+        last_updated_at, download_count, download_size, install_size
+      - category: highest-priority relationship category across all source mods
+      - related_mods: flat list of source identifiers that point to this mod
+
+    Results exclude mods that are in the input identifiers list.
+    Sorted by category priority, then download_count desc within each tier.
+    """
+    id_set = set(identifiers)
+    forward_cats  = {c for c in categories if c in _FORWARD_FIELDS}
+    reverse_cats  = {c for c in categories if c in _REVERSE_FIELDS.values()}
+    need_forward  = bool(forward_cats)
+    need_reverse  = bool(reverse_cats)
+
+    # reverse map: reverse_category → forward CKAN field
+    _rev_cat_to_field = {v: k for k, v in _REVERSE_FIELDS.items()}
+
+    # result_map: target_identifier → {category: str, related_mods: set}
+    result_map: dict[str, dict] = {}
+
+    def _record(target: str, source: str, cat: str) -> None:
+        if target in id_set:
+            return
+        if target not in result_map:
+            result_map[target] = {"category": cat, "related_mods": {source}}
+        else:
+            existing_cat = result_map[target]["category"]
+            if RELATION_PRIORITY[cat] < RELATION_PRIORITY[existing_cat]:
+                result_map[target]["category"] = cat
+            result_map[target]["related_mods"].add(source)
+
+    all_rows = conn.execute(
+        "SELECT identifier, ckan_json, name, abstract, tags, authors, "
+        "max_ksp_version, latest_version, last_updated_at, download_count, "
+        "download_size, install_size FROM mods"
+    ).fetchall()
+
+    # Build lookup: identifier → row (needed to hydrate results later)
+    row_by_id: dict[str, sqlite3.Row] = {r["identifier"]: r for r in all_rows}
+
+    for row in all_rows:
+        ident = row["identifier"]
+        try:
+            raw = json.loads(row["ckan_json"])
+        except (json.JSONDecodeError, TypeError):
+            continue
+
+        # Forward: input mod → related mods in its relation lists
+        if need_forward and ident in id_set:
+            for field, cat in _FORWARD_FIELDS.items():
+                if cat not in forward_cats:
+                    continue
+                entries = raw.get(field)
+                if not entries:
+                    continue
+                for entry in entries:
+                    target = entry.get("name") if isinstance(entry, dict) else str(entry)
+                    if target:
+                        _record(target, ident, cat)
+
+        # Reverse: any mod that lists an input mod in its relation lists
+        if need_reverse and ident not in id_set:
+            for field, rev_cat in _REVERSE_FIELDS.items():
+                if rev_cat not in reverse_cats:
+                    continue
+                entries = raw.get(field)
+                if not entries:
+                    continue
+                for entry in entries:
+                    target = entry.get("name") if isinstance(entry, dict) else str(entry)
+                    if target in id_set:
+                        _record(ident, target, rev_cat)
+
+    # Hydrate results with mod metadata
+    results = []
+    for target_id, rel in result_map.items():
+        row = row_by_id.get(target_id)
+        if row is None:
+            continue  # referenced but not in DB (virtual/external package)
+        results.append({
+            "identifier":      target_id,
+            "name":            row["name"],
+            "abstract":        row["abstract"],
+            "tags":            row["tags"],
+            "authors":         row["authors"],
+            "max_ksp_version": row["max_ksp_version"],
+            "latest_version":  row["latest_version"],
+            "last_updated_at": row["last_updated_at"],
+            "download_count":  row["download_count"],
+            "download_size":   row["download_size"],
+            "install_size":    row["install_size"],
+            "category":        rel["category"],
+            "related_mods":    sorted(rel["related_mods"]),
+        })
+
+    results.sort(key=lambda r: (
+        RELATION_PRIORITY[r["category"]],
+        -(r["download_count"] or 0),
+    ))
+    return results
 
 
 def list_tags(conn: sqlite3.Connection) -> list[tuple[str, int]]:

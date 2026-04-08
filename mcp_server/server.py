@@ -20,10 +20,12 @@ from rich.console import Console
 
 from harvester.db import (
     DB_PATH,
+    RELATION_PRIORITY,
     count_search,
     get_mod,
     get_mod_count,
     get_mod_versions,
+    get_recommendations,
     list_tags,
     open_db,
     search_mods,
@@ -295,6 +297,98 @@ def get_mod_tool(
             }
 
     return json.dumps(result, indent=2)
+
+
+_ALL_RELATION_CATEGORIES = list(RELATION_PRIORITY.keys())
+_DEFAULT_RELATION_CATEGORIES = ["depends", "recommends", "suggests"]
+
+
+@mcp.tool()
+@_tool
+def get_recommendations_tool(
+    identifiers: list[str],
+    categories: list[str] | None = None,
+    limit: int = 20,
+    offset: int = 0,
+) -> str:
+    """Get mods related to a given list of mods via CKAN dependency/recommendation relationships.
+
+    For each result, shows the same fields as search_mods plus the relationship category
+    and which input mods it was found through.
+
+    If the same mod appears via multiple input mods or multiple relationship types, it is
+    deduplicated: the highest-priority category wins, and all source mods are listed.
+
+    Args:
+        identifiers: List of CKAN mod identifiers to find recommendations for.
+                     Use search_mods to find identifiers first.
+        categories: Which relationship categories to include.
+                    Defaults to ["depends", "recommends", "suggests"].
+                    Available categories (in priority order):
+                    - "depends":       mods that the input mods depend on
+                    - "supports":      mods that the input mods declare support for
+                    - "recommends":    mods recommended by the input mods
+                    - "suggests":      mods suggested by the input mods
+                    - "depends_by":    mods that depend on any of the input mods
+                    - "supported_by":  mods that declare support for any of the input mods
+                    - "recommended_by": mods that recommend any of the input mods
+                    - "suggested_by":  mods that suggest any of the input mods
+                    Pass ["all"] to include all categories.
+        limit: Number of results per page (default 20, max 100).
+        offset: Pagination offset (default 0).
+
+    Returns JSON with keys: total, offset, limit, results.
+    Each result has: identifier, name, abstract, tags, authors, max_ksp_version,
+    latest_version, last_updated_at, download_count, download_size, install_size,
+    category, related_mods.
+    """
+    _ensure_harvested()
+    if not identifiers:
+        return json.dumps({"error": "identifiers must be a non-empty list."})
+
+    if categories is None:
+        categories = _DEFAULT_RELATION_CATEGORIES
+    elif categories == ["all"]:
+        categories = _ALL_RELATION_CATEGORIES
+
+    valid = set(_ALL_RELATION_CATEGORIES)
+    categories = [c for c in categories if c in valid]
+    if not categories:
+        return json.dumps({"error": f"No valid categories specified. Valid: {_ALL_RELATION_CATEGORIES}"})
+
+    limit = min(limit, 100)
+    conn = _get_conn()
+    try:
+        results = get_recommendations(conn, identifiers, categories)
+    finally:
+        conn.close()
+
+    total = len(results)
+    page  = results[offset: offset + limit]
+
+    return json.dumps({
+        "total":   total,
+        "offset":  offset,
+        "limit":   limit,
+        "results": [
+            {
+                "identifier":      r["identifier"],
+                "name":            r["name"],
+                "abstract":        r["abstract"],
+                "tags":            r["tags"].split(",") if r["tags"] else [],
+                "authors":         r["authors"].split(",") if r["authors"] else [],
+                "max_ksp_version": r["max_ksp_version"],
+                "latest_version":  r["latest_version"],
+                "last_updated_at": r["last_updated_at"],
+                "download_count":  r["download_count"],
+                "download_size":   r["download_size"],
+                "install_size":    r["install_size"],
+                "category":        r["category"],
+                "related_mods":    r["related_mods"],
+            }
+            for r in page
+        ],
+    })
 
 
 @mcp.tool()
