@@ -45,6 +45,7 @@ Use `ksp-mods-mcp` as the command. The server communicates over stdio.
 | `get_recommendations_tool` | Related mods via dependency/recommendation relationships. Forward and reverse. Paginated. |
 | `list_tags_tool` | All tags in the index ranked by mod count. |
 | `list_parts_tool` | Parts inside a mod's cached ZIP. Three detail levels: summary, basic, long. |
+| `get_part_tool` | Full detail for a single part: formatted module stats (engine thrust/Isp, RCS, reaction wheels, etc.) and resource amounts. |
 | `index_status` | DB stats, last harvest timestamp, and whether the CKAN download cache is detected. |
 | `refresh_index` | Re-harvest the CKAN-meta archive. No-op if unchanged; use `force=True` to rebuild. |
 
@@ -74,7 +75,17 @@ If CKAN is installed and has downloaded mods, `is_cached: true` appears on any r
 
 **Note:** `is_cached` reflects the *latest* version of a mod. If you have an older version cached but not the latest, the flag will not appear — the cached copy may not match what CKAN would install. If you're pinned to an older KSP version (e.g. 1.8.1) and intentionally keep older mod versions, use the `ksp_versions` filter to find compatible mods and disregard the cached status.
 
-The `list_parts_tool` also requires a cached ZIP to work.
+Both `list_parts_tool` and `get_part_tool` require a cached ZIP to work.
+
+### Part detail levels
+
+`list_parts_tool` has three detail levels:
+
+- `summary` — total part count and category breakdown
+- `basic` — per-part name, resolved title, and category
+- `long` — basic + cost, mass, tech node, bulkhead profiles, supported module type names, unsupported module names, and carried resource names
+
+`get_part_tool` always returns full detail: all of the above plus structured module data (engine thrust, Isp, propellants; RCS thrust and propellants; reaction wheel torque; solar panel output; command pod crew; parachute drag; decoupler ejection force; docking node type; generator and converter rates; harvester efficiency) and full resource amounts. Module types with no formatter are listed by name under `unsupported_modules`.
 
 ## Development
 

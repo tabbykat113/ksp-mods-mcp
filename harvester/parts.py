@@ -4,10 +4,11 @@ KSP part extraction from a mod's cached ZIP.
 Parses .cfg files under GameData/{identifier}/Parts/ and resolves
 #LOC_... strings from GameData/{identifier}/Localization/en-us.cfg.
 
-Detail levels:
-  summary  — category counts only
-  basic    — name, title, category per part
-  long     — basic + cost, mass, tech_required, modules, resources, bulkhead_profiles
+Pipeline:
+  parse_cfg(text)                     — raw CfgNode tree (cfg_parser.py)
+  _extract_part(node, loc) -> dict    — full part data, always
+  extract_parts(identifier, url)      — all parts at full detail
+  get_part(identifier, url, name)     — single part by name
 """
 
 from __future__ import annotations
@@ -15,155 +16,307 @@ from __future__ import annotations
 import re
 import zipfile
 from pathlib import Path
-from typing import Literal
 
-DetailLevel = Literal["summary", "basic", "long"]
+from .cfg_parser import CfgNode, parse_cfg
 
 
 # ---------------------------------------------------------------------------
-# Localization parser
+# Localization
 # ---------------------------------------------------------------------------
 
 def _parse_localization(text: str) -> dict[str, str]:
-    """Parse a KSP Localization en-us.cfg and return {key: value} mapping."""
+    """Parse a KSP en-us.cfg and return {#LOC_key: value}."""
+    nodes = parse_cfg(text)
     loc: dict[str, str] = {}
-    # Keys look like:  #LOC_Foo_bar_title = Some text here
-    # Values can span multiple lines if the line ends with a continuation,
-    # but in practice nearly all KSP loc values are single-line.
-    for line in text.splitlines():
-        line = line.strip()
-        if not line.startswith("#LOC_"):
+    for node in nodes:
+        loc_node = node if node.name == "Localization" else node.child_named("Localization")
+        if loc_node is None:
             continue
-        eq = line.find(" = ")
-        if eq == -1:
-            eq = line.find("=")
-            if eq == -1:
-                continue
-            key = line[:eq].strip()
-            val = line[eq + 1:].strip()
-        else:
-            key = line[:eq].strip()
-            val = line[eq + 3:].strip()
-        loc[key] = val
+        en = loc_node.child_named("en-us")
+        if en is None:
+            continue
+        for key, val in en.fields:
+            if key.startswith("#LOC_"):
+                loc[key] = val
+    # Fallback: some mods put loc keys directly at top level
+    if not loc:
+        for node in nodes:
+            for key, val in node.fields:
+                if key.startswith("#LOC_"):
+                    loc[key] = val
     return loc
 
 
-# ---------------------------------------------------------------------------
-# CFG parser (minimal — only what we need)
-# ---------------------------------------------------------------------------
-
-_FLOAT_RE = re.compile(r"^-?\d+(\.\d+)?$")
-
-
-def _to_number(s: str) -> float | int | str:
-    s = s.strip()
-    if _FLOAT_RE.match(s):
-        f = float(s)
-        return int(f) if f == int(f) else f
-    return s
-
-
-def _parse_part_cfg(text: str) -> dict | None:
-    """
-    Parse a KSP part .cfg file and return a dict of extracted fields,
-    or None if no PART block is found.
-    """
-    lines = text.splitlines()
-    # Find the top-level PART { block
-    in_part = False
-    part_depth = 0
-    current_block_name = ""
-    block_stack: list[str] = []   # stack of block names
-    modules: list[str] = []
-    resources: list[str] = []
-    fields: dict[str, str] = {}
-
-    i = 0
-    while i < len(lines):
-        raw = lines[i]
-        line = raw.strip()
-
-        if not in_part:
-            if line == "PART":
-                in_part = True
-                part_depth = 0
-            i += 1
-            continue
-
-        # Inside PART block
-        if line == "{":
-            part_depth += 1
-            block_stack.append(current_block_name)
-            current_block_name = ""
-            i += 1
-            continue
-
-        if line == "}":
-            part_depth -= 1
-            if part_depth == 0:
-                break  # end of PART block
-            block_stack.pop()
-            current_block_name = ""
-            i += 1
-            continue
-
-        # Sub-block opener (name only on its own line before {)
-        if line and not line.startswith("//") and "=" not in line and "{" not in line:
-            current_block_name = line
-            i += 1
-            continue
-
-        # key = value
-        if "=" in line and not line.startswith("//"):
-            eq = line.index("=")
-            key = line[:eq].strip()
-            val = line[eq + 1:].strip()
-            # Remove inline comment
-            ci = val.find("//")
-            if ci != -1:
-                val = val[:ci].strip()
-
-            depth = len(block_stack)
-            if depth == 1:
-                # Top-level fields inside PART {}
-                fields[key] = val
-            elif depth == 2:
-                parent = block_stack[-1]
-                if parent == "MODULE" and key == "name":
-                    modules.append(val)
-                elif parent == "RESOURCE" and key == "name":
-                    resources.append(val)
-
-        i += 1
-
-    if not in_part:
-        return None
-
-    return {
-        "fields": fields,
-        "modules": modules,
-        "resources": resources,
-    }
-
-
 def _resolve(val: str, loc: dict[str, str]) -> str:
-    """Resolve a #LOC_ key to its English string, or return val unchanged."""
     if val and val.startswith("#LOC_"):
         return loc.get(val, val)
     return val
 
 
 def _strip_html(s: str) -> str:
-    """Remove simple HTML tags KSP uses in loc strings (e.g. <b>...</b>)."""
     return re.sub(r"<[^>]+>", "", s).strip()
 
 
 # ---------------------------------------------------------------------------
-# Public API
+# Module formatting
+# ---------------------------------------------------------------------------
+
+def _to_float(s: str | None) -> float | None:
+    if s is None:
+        return None
+    try:
+        return float(s)
+    except (ValueError, TypeError):
+        return None
+
+
+def _to_int(s: str | None) -> int | None:
+    f = _to_float(s)
+    return int(f) if f is not None else None
+
+
+def _parse_curve_keys(node: CfgNode) -> list[list[float]]:
+    result = []
+    for k, v in node.fields:
+        if k == "key":
+            parts = v.split()
+            try:
+                result.append([float(p) for p in parts[:2]])
+            except ValueError:
+                pass
+    return result
+
+
+def _format_engine(block: CfgNode) -> dict:
+    propellants = []
+    for p in block.children_named("PROPELLANT"):
+        name = p.get("name")
+        ratio = _to_float(p.get("ratio"))
+        if name:
+            propellants.append({"name": name, "ratio": ratio})
+
+    isp_vac = isp_sl = None
+    isp_curve = block.child_named("atmosphereCurve")
+    if isp_curve:
+        for x, y in _parse_curve_keys(isp_curve):
+            if x == 0:
+                isp_vac = y
+            elif x == 1:
+                isp_sl = y
+
+    return {
+        "type": block.get("name"),
+        "engine_id": block.get("engineID"),
+        "engine_type": block.get("EngineType"),
+        "thrust_min": _to_float(block.get("minThrust")),
+        "thrust_max": _to_float(block.get("maxThrust")),
+        "heat_production": _to_float(block.get("heatProduction")),
+        "isp_vac": isp_vac,
+        "isp_sl": isp_sl,
+        "propellants": propellants,
+    }
+
+
+def _format_srb(block: CfgNode) -> dict:
+    d = _format_engine(block)
+    d["thrust_curve"] = block.get("thrustCurve")
+    return d
+
+
+def _format_rcs(block: CfgNode) -> dict:
+    propellants = []
+    for p in block.children_named("PROPELLANT"):
+        name = p.get("name")
+        ratio = _to_float(p.get("ratio"))
+        if name:
+            propellants.append({"name": name, "ratio": ratio})
+
+    isp_vac = isp_sl = None
+    isp_curve = block.child_named("atmosphereCurve")
+    if isp_curve:
+        for x, y in _parse_curve_keys(isp_curve):
+            if x == 0:
+                isp_vac = y
+            elif x == 1:
+                isp_sl = y
+
+    return {
+        "type": block.get("name"),
+        "thrust_power": _to_float(block.get("thrusterPower")),
+        "isp_vac": isp_vac,
+        "isp_sl": isp_sl,
+        "propellants": propellants,
+    }
+
+
+def _format_reaction_wheel(block: CfgNode) -> dict:
+    return {
+        "type": block.get("name"),
+        "torque_x": _to_float(block.get("PitchTorque")),
+        "torque_y": _to_float(block.get("YawTorque")),
+        "torque_z": _to_float(block.get("RollTorque")),
+        "ec_per_torque": _to_float(block.get("ElectricChargeUpkeep")),
+    }
+
+
+def _format_solar_panel(block: CfgNode) -> dict:
+    return {
+        "type": block.get("name"),
+        "charge_rate": _to_float(block.get("chargeRate")),
+        "resource": block.get("resourceName"),
+    }
+
+
+def _format_command(block: CfgNode) -> dict:
+    return {
+        "type": block.get("name"),
+        "minimum_crew": _to_int(block.get("minimumCrew")),
+    }
+
+
+def _format_parachute(block: CfgNode) -> dict:
+    return {
+        "type": block.get("name"),
+        "deploy_altitude": _to_float(block.get("deployAltitude")),
+        "semi_deploy_drag": _to_float(block.get("semiDeployedDrag")),
+        "fully_deploy_drag": _to_float(block.get("fullyDeployedDrag")),
+    }
+
+
+def _format_decoupler(block: CfgNode) -> dict:
+    return {
+        "type": block.get("name"),
+        "ejection_force": _to_float(block.get("ejectionForce")),
+        "explosive_node_id": block.get("explosiveNodeID"),
+    }
+
+
+def _format_docking_node(block: CfgNode) -> dict:
+    return {
+        "type": block.get("name"),
+        "node_type": block.get("nodeType"),
+    }
+
+
+def _format_generator(block: CfgNode) -> dict:
+    outputs = []
+    for r in block.children_named("OUTPUT_RESOURCE"):
+        name = r.get("name")
+        rate = _to_float(r.get("rate"))
+        if name:
+            outputs.append({"name": name, "rate": rate})
+    return {
+        "type": block.get("name"),
+        "outputs": outputs,
+    }
+
+
+def _format_resource_converter(block: CfgNode) -> dict:
+    inputs = []
+    for r in block.children_named("INPUT_RESOURCE"):
+        name = r.get("name")
+        rate = _to_float(r.get("Ratio"))
+        if name:
+            inputs.append({"name": name, "rate": rate})
+    outputs = []
+    for r in block.children_named("OUTPUT_RESOURCE"):
+        name = r.get("name")
+        rate = _to_float(r.get("Ratio"))
+        if name:
+            outputs.append({"name": name, "rate": rate})
+    return {
+        "type": block.get("name"),
+        "converter_name": block.get("ConverterName"),
+        "inputs": inputs,
+        "outputs": outputs,
+    }
+
+
+def _format_resource_harvester(block: CfgNode) -> dict:
+    return {
+        "type": block.get("name"),
+        "harvester_type": _to_int(block.get("HarvesterType")),
+        "resource": block.get("ResourceName"),
+        "efficiency": _to_float(block.get("Efficiency")),
+    }
+
+
+_MODULE_FORMATTERS: dict[str, object] = {
+    "ModuleEngines":              _format_engine,
+    "ModuleEnginesFX":            _format_engine,
+    "ModuleSRB":                  _format_srb,
+    "ModuleRCS":                  _format_rcs,
+    "ModuleRCSFX":                _format_rcs,
+    "ModuleReactionWheel":        _format_reaction_wheel,
+    "ModuleDeployableSolarPanel": _format_solar_panel,
+    "ModuleCommand":              _format_command,
+    "ModuleParachute":            _format_parachute,
+    "ModuleDecoupler":            _format_decoupler,
+    "ModuleAnchoredDecoupler":    _format_decoupler,
+    "ModuleDockingNode":          _format_docking_node,
+    "ModuleGenerator":            _format_generator,
+    "ModuleResourceConverter":    _format_resource_converter,
+    "ModuleResourceHarvester":    _format_resource_harvester,
+}
+
+
+def _format_resource_block(block: CfgNode) -> dict:
+    return {
+        "name": block.get("name"),
+        "amount": _to_float(block.get("amount")),
+        "max_amount": _to_float(block.get("maxAmount")),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Part extraction — always full detail
+# ---------------------------------------------------------------------------
+
+def _extract_part(node: CfgNode, loc: dict[str, str]) -> dict | None:
+    part_name = node.get("name")
+    if not part_name:
+        return None
+
+    raw_title    = node.get("title") or ""
+    raw_category = node.get("category") or ""
+    title    = _strip_html(_resolve(raw_title, loc)) if raw_title else ""
+    category = _resolve(raw_category, loc) if raw_category else ""
+
+    supported_modules: list[dict] = []
+    unsupported_modules: list[str] = []
+    for child in node.children_named("MODULE"):
+        mod_name = child.get("name") or ""
+        formatter = _MODULE_FORMATTERS.get(mod_name)
+        if formatter:
+            supported_modules.append(formatter(child))  # type: ignore[operator]
+        elif mod_name:
+            unsupported_modules.append(mod_name)
+
+    return {
+        "name":                part_name,
+        "title":               title,
+        "category":            category,
+        "cost":                _to_float(node.get("cost")),
+        "mass":                _to_float(node.get("mass")),
+        "tech_required":       node.get("TechRequired") or None,
+        "bulkhead_profiles":   [
+            p.strip()
+            for p in (node.get("bulkheadProfiles") or "").split(",")
+            if p.strip()
+        ],
+        "modules":             supported_modules,
+        "unsupported_modules": unsupported_modules,
+        "resources":           [
+            _format_resource_block(r) for r in node.children_named("RESOURCE")
+        ],
+    }
+
+
+# ---------------------------------------------------------------------------
+# ZIP access
 # ---------------------------------------------------------------------------
 
 def _get_zip_path(identifier: str, download_url: str | None) -> Path | None:
-    """Resolve the cached ZIP path for a mod using ckan_cache internals."""
     from .ckan_cache import _get_cache_hashes, _url_hash, _cache_dir
     if not download_url:
         return None
@@ -178,113 +331,84 @@ def _get_zip_path(identifier: str, download_url: str | None) -> Path | None:
     return None
 
 
-def extract_parts(
-    identifier: str,
-    download_url: str | None,
-    detail: DetailLevel = "basic",
-) -> dict:
+def _open_zip_parts(identifier: str, download_url: str | None) -> tuple[list[dict], str | None]:
     """
-    Open the cached ZIP for the given mod and extract part data.
-
-    Returns a dict with:
-      - detail "summary": {total_parts, categories: {name: count}}
-      - detail "basic":   {total_parts, categories, parts: [{name, title, category}]}
-      - detail "long":    {total_parts, categories, parts: [{name, title, category,
-                            cost, mass, tech_required, modules, resources,
-                            bulkhead_profiles}]}
-
-    Returns {"error": "..."} on failure.
+    Open the cached ZIP and return (parts, error).
+    parts is a list of fully-extracted part dicts; error is a string on failure.
     """
     zip_path = _get_zip_path(identifier, download_url)
     if zip_path is None:
-        return {"error": f"Mod '{identifier}' is not in the CKAN download cache."}
+        return [], f"Mod '{identifier}' is not in the CKAN download cache."
 
     try:
         zf = zipfile.ZipFile(zip_path)
     except zipfile.BadZipFile as e:
-        return {"error": f"ZIP is corrupt: {e}"}
+        return [], f"ZIP is corrupt: {e}"
 
     with zf:
         names = zf.namelist()
         parts_prefix = f"GameData/{identifier}/Parts/"
         loc_path = f"GameData/{identifier}/Localization/en-us.cfg"
 
-        # Load localization
         loc: dict[str, str] = {}
         if loc_path in names:
             try:
                 loc_text = zf.read(loc_path).decode("utf-8", errors="replace")
                 loc = _parse_localization(loc_text)
             except Exception:
-                pass  # proceed without loc
-
-        # Find all part CFGs under GameData/{identifier}/Parts/
-        cfg_paths = [
-            n for n in names
-            if n.startswith(parts_prefix) and n.endswith(".cfg")
-        ]
+                pass
 
         parts: list[dict] = []
-        for cfg_path in sorted(cfg_paths):
+        for cfg_path in sorted(n for n in names if n.startswith(parts_prefix) and n.endswith(".cfg")):
             try:
                 text = zf.read(cfg_path).decode("utf-8", errors="replace")
             except Exception:
                 continue
+            for node in parse_cfg(text):
+                if node.name != "PART":
+                    continue
+                entry = _extract_part(node, loc)
+                if entry is not None:
+                    parts.append(entry)
 
-            parsed = _parse_part_cfg(text)
-            if parsed is None:
-                continue
+    return parts, None
 
-            f = parsed["fields"]
-            part_name = f.get("name", "")
-            if not part_name:
-                continue
 
-            raw_title    = f.get("title", "")
-            raw_category = f.get("category", "")
-            title    = _strip_html(_resolve(raw_title, loc)) if raw_title else ""
-            category = _resolve(raw_category, loc) if raw_category else ""
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
 
-            if detail == "summary":
-                parts.append({"category": category})
-                continue
+def extract_parts(identifier: str, download_url: str | None) -> dict:
+    """
+    Open the cached ZIP for the given mod and extract all parts at full detail.
 
-            entry: dict = {
-                "name":     part_name,
-                "title":    title,
-                "category": category,
-            }
+    Returns:
+      {total_parts, categories: {name: count}, parts: [full part dicts]}
 
-            if detail == "long":
-                cost_raw = f.get("cost")
-                mass_raw = f.get("mass")
-                entry["cost"]         = _to_number(cost_raw) if cost_raw else None
-                entry["mass"]         = _to_number(mass_raw) if mass_raw else None
-                entry["tech_required"] = f.get("TechRequired") or None
-                entry["modules"]      = parsed["modules"]
-                entry["resources"]    = parsed["resources"]
-                raw_bp = f.get("bulkheadProfiles", "")
-                entry["bulkhead_profiles"] = (
-                    [p.strip() for p in raw_bp.split(",") if p.strip()]
-                    if raw_bp else []
-                )
+    Returns {"error": "..."} on failure.
+    """
+    parts, error = _open_zip_parts(identifier, download_url)
+    if error:
+        return {"error": error}
 
-            parts.append(entry)
-
-    # Build category counts
     category_counts: dict[str, int] = {}
     for p in parts:
         cat = p.get("category") or "Uncategorized"
         category_counts[cat] = category_counts.get(cat, 0) + 1
 
-    if detail == "summary":
-        return {
-            "total_parts": len(parts),
-            "categories": category_counts,
-        }
+    return {"total_parts": len(parts), "categories": category_counts, "parts": parts}
 
-    return {
-        "total_parts": len(parts),
-        "categories": category_counts,
-        "parts": parts,
-    }
+
+def get_part(identifier: str, download_url: str | None, part_name: str) -> dict:
+    """
+    Extract full detail for a single named part from the mod's cached ZIP.
+
+    Returns the part dict or {"error": "..."} on failure.
+    """
+    parts, error = _open_zip_parts(identifier, download_url)
+    if error:
+        return {"error": error}
+    for part in parts:
+        if part["name"] == part_name:
+            return part
+    return {"error": f"Part '{part_name}' not found in mod '{identifier}'. Use list_parts_tool to see available parts."}
