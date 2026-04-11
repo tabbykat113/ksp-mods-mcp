@@ -410,23 +410,26 @@ def _open_zip_parts(
 
         folder = _resolve_gamedata_folder(identifier, install_stanzas or [], normalized)
 
-        # Find parts and localization using a suffix match so any ZIP wrapper is ignored
-        parts_suffix = f"GameData/{folder}/Parts/"
-        loc_suffix   = f"GameData/{folder}/Localization/en-us.cfg"
+        # Match paths containing GameData/{folder}/...anywhere.../Parts/ and
+        # GameData/{folder}/...anywhere.../Localization/en-us.cfg so that mods
+        # with intermediate subdirectories (e.g. GameData/Mod/BaseSystem/Parts/)
+        # are handled correctly. ZIP wrapper prefixes are also ignored.
+        folder_prefix = f"GameData/{folder}/"
+        loc_suffix    = f"/Localization/en-us.cfg"
 
         loc: dict[str, str] = {}
-        loc_matches = [n for n in normalized if n.endswith(loc_suffix)]
-        if loc_matches:
-            try:
-                loc_text = zf.read(names[normalized.index(loc_matches[0])]).decode("utf-8", errors="replace")
-                loc = _parse_localization(loc_text)
-            except Exception:
-                pass
+        for norm, orig in zip(normalized, names):
+            if folder_prefix in norm and norm.endswith(loc_suffix):
+                try:
+                    loc_text = zf.read(orig).decode("utf-8", errors="replace")
+                    loc.update(_parse_localization(loc_text))
+                except Exception:
+                    pass
 
         parts: list[dict] = []
         cfg_entries = sorted(
             (orig, norm) for orig, norm in zip(names, normalized)
-            if parts_suffix in norm and norm.endswith(".cfg")
+            if folder_prefix in norm and "/Parts/" in norm and norm.endswith(".cfg")
         )
         for orig_path, _ in cfg_entries:
             try:
