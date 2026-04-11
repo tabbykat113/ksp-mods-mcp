@@ -526,7 +526,7 @@ def list_parts_tool(
     conn = _get_conn()
     try:
         row = conn.execute(
-            "SELECT download_url FROM mods WHERE identifier = ?", (identifier,)
+            "SELECT download_url, ckan_json FROM mods WHERE identifier = ?", (identifier,)
         ).fetchone()
     finally:
         conn.close()
@@ -534,7 +534,8 @@ def list_parts_tool(
     if row is None:
         return json.dumps({"error": f"Mod '{identifier}' not found in index."})
 
-    result = extract_parts(identifier, row["download_url"])
+    install_stanzas = json.loads(row["ckan_json"]).get("install") or []
+    result = extract_parts(identifier, row["download_url"], install_stanzas)
     if "error" in result:
         return json.dumps(result)
 
@@ -611,7 +612,7 @@ def get_part_tool(
     conn = _get_conn()
     try:
         row = conn.execute(
-            "SELECT download_url FROM mods WHERE identifier = ?", (identifier,)
+            "SELECT download_url, ckan_json FROM mods WHERE identifier = ?", (identifier,)
         ).fetchone()
     finally:
         conn.close()
@@ -619,7 +620,8 @@ def get_part_tool(
     if row is None:
         return json.dumps({"error": f"Mod '{identifier}' not found in index."})
 
-    result = get_part(identifier, row["download_url"], part_name)
+    install_stanzas = json.loads(row["ckan_json"]).get("install") or []
+    result = get_part(identifier, row["download_url"], part_name, install_stanzas)
     return json.dumps(result, indent=2)
 
 

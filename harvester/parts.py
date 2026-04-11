@@ -317,24 +317,83 @@ def _extract_part(node: CfgNode, loc: dict[str, str]) -> dict | None:
 # ---------------------------------------------------------------------------
 
 def _get_zip_path(identifier: str, download_url: str | None) -> Path | None:
-    from .ckan_cache import _get_cache_hashes, _url_hash, _cache_dir
+    import harvester.ckan_cache as _cc
     if not download_url:
         return None
-    h = _url_hash(download_url)
-    if h not in _get_cache_hashes():
-        return None
-    if _cache_dir is None:
-        return None
-    for entry in _cache_dir.iterdir():
-        if entry.name.upper().startswith(h) and entry.suffix == ".zip":
-            return entry
+    hashes = _cc._get_cache_hashes()  # ensures _cache_dir is populated
+    for url in download_url.splitlines():
+        if not url:
+            continue
+        h = _cc._url_hash(url)
+        if h not in hashes:
+            continue
+        if _cc._cache_dir is None:
+            return None
+        for entry in _cc._cache_dir.iterdir():
+            if entry.name.upper().startswith(h) and entry.suffix == ".zip":
+                return entry
     return None
 
 
-def _open_zip_parts(identifier: str, download_url: str | None) -> tuple[list[dict], str | None]:
+def _resolve_gamedata_folder(identifier: str, install_stanzas: list[dict], zip_names: list[str]) -> str:
+    """
+    Resolve the GameData subfolder name for this mod's parts using CKAN's install stanza logic.
+
+    CKAN install stanzas use either:
+      - "find": folder name to locate anywhere in the ZIP tree (most common)
+      - "file": exact path prefix
+
+    We replicate CKAN's default fallback: find=identifier if no stanzas present.
+    Returns the folder name (e.g. "Benjee10_MMSEV"), not a full path.
+    """
+    import re as _re
+
+    candidates: list[str] = []
+    stanzas = install_stanzas or [{"find": identifier}]
+
+    for stanza in stanzas:
+        install_to = stanza.get("install_to", "GameData")
+        if install_to != "GameData":
+            continue  # we only care about GameData installs
+
+        find = stanza.get("find")
+        file_ = stanza.get("file")
+
+        if find:
+            # Match folder name anywhere in the ZIP tree — same as CKAN's (?:^|/) regex
+            pat = _re.compile(r"(?:^|/)(" + _re.escape(find) + r")/")
+            for name in zip_names:
+                m = pat.search(name.replace("\\", "/"))
+                if m:
+                    candidates.append(find)
+                    break
+        elif file_:
+            # Exact prefix — extract the last path component that lands in GameData
+            # e.g. "Wrapper/GameData/MyMod" → "MyMod"
+            normalized = file_.replace("\\", "/").rstrip("/")
+            # Find "GameData/<folder>" in the path
+            gd_match = _re.search(r"GameData/([^/]+)", normalized)
+            if gd_match:
+                candidates.append(gd_match.group(1))
+            else:
+                # file points directly at the folder to install; use last component
+                candidates.append(normalized.split("/")[-1])
+
+    # Return first resolved candidate; fall back to identifier
+    return candidates[0] if candidates else identifier
+
+
+def _open_zip_parts(
+    identifier: str,
+    download_url: str | None,
+    install_stanzas: list[dict] | None = None,
+) -> tuple[list[dict], str | None]:
     """
     Open the cached ZIP and return (parts, error).
     parts is a list of fully-extracted part dicts; error is a string on failure.
+
+    install_stanzas should be the parsed 'install' field from the mod's ckan_json,
+    used to locate the correct GameData subfolder inside the ZIP.
     """
     zip_path = _get_zip_path(identifier, download_url)
     if zip_path is None:
@@ -347,21 +406,31 @@ def _open_zip_parts(identifier: str, download_url: str | None) -> tuple[list[dic
 
     with zf:
         names = zf.namelist()
-        parts_prefix = f"GameData/{identifier}/Parts/"
-        loc_path = f"GameData/{identifier}/Localization/en-us.cfg"
+        normalized = [n.replace("\\", "/") for n in names]
+
+        folder = _resolve_gamedata_folder(identifier, install_stanzas or [], normalized)
+
+        # Find parts and localization using a suffix match so any ZIP wrapper is ignored
+        parts_suffix = f"GameData/{folder}/Parts/"
+        loc_suffix   = f"GameData/{folder}/Localization/en-us.cfg"
 
         loc: dict[str, str] = {}
-        if loc_path in names:
+        loc_matches = [n for n in normalized if n.endswith(loc_suffix)]
+        if loc_matches:
             try:
-                loc_text = zf.read(loc_path).decode("utf-8", errors="replace")
+                loc_text = zf.read(names[normalized.index(loc_matches[0])]).decode("utf-8", errors="replace")
                 loc = _parse_localization(loc_text)
             except Exception:
                 pass
 
         parts: list[dict] = []
-        for cfg_path in sorted(n for n in names if n.startswith(parts_prefix) and n.endswith(".cfg")):
+        cfg_entries = sorted(
+            (orig, norm) for orig, norm in zip(names, normalized)
+            if parts_suffix in norm and norm.endswith(".cfg")
+        )
+        for orig_path, _ in cfg_entries:
             try:
-                text = zf.read(cfg_path).decode("utf-8", errors="replace")
+                text = zf.read(orig_path).decode("utf-8", errors="replace")
             except Exception:
                 continue
             for node in parse_cfg(text):
@@ -378,7 +447,11 @@ def _open_zip_parts(identifier: str, download_url: str | None) -> tuple[list[dic
 # Public API
 # ---------------------------------------------------------------------------
 
-def extract_parts(identifier: str, download_url: str | None) -> dict:
+def extract_parts(
+    identifier: str,
+    download_url: str | None,
+    install_stanzas: list[dict] | None = None,
+) -> dict:
     """
     Open the cached ZIP for the given mod and extract all parts at full detail.
 
@@ -387,7 +460,7 @@ def extract_parts(identifier: str, download_url: str | None) -> dict:
 
     Returns {"error": "..."} on failure.
     """
-    parts, error = _open_zip_parts(identifier, download_url)
+    parts, error = _open_zip_parts(identifier, download_url, install_stanzas)
     if error:
         return {"error": error}
 
@@ -399,13 +472,18 @@ def extract_parts(identifier: str, download_url: str | None) -> dict:
     return {"total_parts": len(parts), "categories": category_counts, "parts": parts}
 
 
-def get_part(identifier: str, download_url: str | None, part_name: str) -> dict:
+def get_part(
+    identifier: str,
+    download_url: str | None,
+    part_name: str,
+    install_stanzas: list[dict] | None = None,
+) -> dict:
     """
     Extract full detail for a single named part from the mod's cached ZIP.
 
     Returns the part dict or {"error": "..."} on failure.
     """
-    parts, error = _open_zip_parts(identifier, download_url)
+    parts, error = _open_zip_parts(identifier, download_url, install_stanzas)
     if error:
         return {"error": error}
     for part in parts:
