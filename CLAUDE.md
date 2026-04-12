@@ -72,7 +72,8 @@ Cache is NOT automatically invalidated when CKAN data changes — see TODO.md.
 - `get_mod_tool` — details by identifier; selectable categories: metadata, relations, install, versions (includes per-version sizes), github, spacedock, raw; `force_refresh` bypasses enrichment TTL; metadata includes `is_cached: true` when applicable
 - `get_recommendations_tool` — related mods for a list of identifiers; categories: `depends`, `supports`, `recommends`, `suggests` (forward) + `depends_by`, `supported_by`, `recommended_by`, `suggested_by` (reverse); default: depends/recommends/suggests; `["all"]` expands to all 8; deduplicates by highest-priority category; each result includes `category` + `related_mods` (source identifiers); `is_cached: true` when applicable; paginated
 - `list_tags_tool` — all tags ranked by mod count
-- `list_parts_tool` — parts in a mod's cached ZIP; detail levels: `summary` (category counts), `basic` (name+title+category), `long` (+cost, mass, tech_required, modules, resources, bulkhead_profiles); requires mod to be in CKAN download cache
+- `list_parts_tool` — parts in a mod's cached ZIP; detail levels: `summary` (category counts), `basic` (name+title+category), `long` (+cost, mass, tech_required, bulkhead_profiles, module type names, resource names); requires mod to be in CKAN download cache
+- `get_part_tool` — full detail for a single part by name; includes formatted module data (engine stats, RCS, etc.) and full resource amounts; unsupported modules listed by name
 - `index_status` — DB stats (mod count, download counts, tags, size coverage), last harvest time, etag, `ckan_cache_available`
 - `refresh_index` — re-harvest CKAN-meta archive (ETag-aware, force option)
 

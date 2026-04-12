@@ -19,7 +19,7 @@ from mcp.server.fastmcp import FastMCP
 from rich.console import Console
 
 from harvester.ckan_cache import cache_dir_exists, cached_identifiers, is_cached
-from harvester.parts import extract_parts
+from harvester.parts import extract_parts, get_part
 from harvester.db import (
     DB_PATH,
     RELATION_PRIORITY,
@@ -508,8 +508,11 @@ def list_parts_tool(
         detail: Level of detail to return:
                 - "summary": total part count and breakdown by category (cheapest)
                 - "basic":   per-part name, resolved title, and category (default)
-                - "long":    basic + cost, mass, tech_required, modules (what the part does),
-                             resources (what it uses/carries), bulkhead_profiles
+                - "long":    basic + cost, mass, tech_required, bulkhead_profiles,
+                             modules (list of supported module type names),
+                             unsupported_modules (list of unsupported module type names),
+                             resources (list of resource names).
+                             Use get_part_tool for full module and resource detail.
 
     Returns JSON. On success:
       summary: {total_parts, categories: {CategoryName: count}}
@@ -523,7 +526,7 @@ def list_parts_tool(
     conn = _get_conn()
     try:
         row = conn.execute(
-            "SELECT download_url FROM mods WHERE identifier = ?", (identifier,)
+            "SELECT download_url, ckan_json FROM mods WHERE identifier = ?", (identifier,)
         ).fetchone()
     finally:
         conn.close()
@@ -531,8 +534,95 @@ def list_parts_tool(
     if row is None:
         return json.dumps({"error": f"Mod '{identifier}' not found in index."})
 
-    result = extract_parts(identifier, row["download_url"], detail=detail)  # type: ignore[arg-type]
-    return json.dumps(result)
+    install_stanzas = json.loads(row["ckan_json"]).get("install") or []
+    result = extract_parts(identifier, row["download_url"], install_stanzas)
+    if "error" in result:
+        return json.dumps(result)
+
+    if detail == "summary":
+        return json.dumps({
+            "total_parts": result["total_parts"],
+            "categories":  result["categories"],
+        })
+
+    if detail == "basic":
+        return json.dumps({
+            "total_parts": result["total_parts"],
+            "categories":  result["categories"],
+            "parts": [
+                {"name": p["name"], "title": p["title"], "category": p["category"]}
+                for p in result["parts"]
+            ],
+        })
+
+    # detail == "long": include all fields except the full module data —
+    # that's reserved for get_part_tool
+    return json.dumps({
+        "total_parts": result["total_parts"],
+        "categories":  result["categories"],
+        "parts": [
+            {
+                "name":                p["name"],
+                "title":               p["title"],
+                "category":            p["category"],
+                "cost":                p["cost"],
+                "mass":                p["mass"],
+                "tech_required":       p["tech_required"],
+                "bulkhead_profiles":   p["bulkhead_profiles"],
+                "modules":             [m["type"] for m in p["modules"]],
+                "unsupported_modules": p["unsupported_modules"],
+                "resources":           [r["name"] for r in p["resources"]],
+            }
+            for p in result["parts"]
+        ],
+    })
+
+
+@mcp.tool()
+@_tool
+def get_part_tool(
+    identifier: str,
+    part_name: str,
+) -> str:
+    """Get full details for a single KSP part from a mod's cached download ZIP.
+
+    Returns structured part data including formatted stats for all supported
+    modules (engines, RCS, reaction wheels, solar panels, etc.) and a list of
+    unsupported module names.
+
+    Use list_parts_tool with detail="basic" first to get valid part names.
+    Only works for mods present in the local CKAN download cache.
+
+    Args:
+        identifier: Exact CKAN mod identifier (e.g. "CryoEngines").
+        part_name:  Internal part name as it appears in the CFG file
+                    (e.g. "cryoengine-stromboli-1"). This is the "name" field,
+                    not the display title. Use list_parts_tool to find it.
+
+    Returns a part object with:
+      name, title, category, cost, mass, tech_required, bulkhead_profiles,
+      modules (list of formatted module data per supported module type),
+      unsupported_modules (list of module type names with no formatter),
+      resources (list of {name, amount, max_amount}).
+    Returns an error object if the mod is not cached, the ZIP cannot be read,
+    or the part name is not found.
+    """
+    _ensure_harvested()
+
+    conn = _get_conn()
+    try:
+        row = conn.execute(
+            "SELECT download_url, ckan_json FROM mods WHERE identifier = ?", (identifier,)
+        ).fetchone()
+    finally:
+        conn.close()
+
+    if row is None:
+        return json.dumps({"error": f"Mod '{identifier}' not found in index."})
+
+    install_stanzas = json.loads(row["ckan_json"]).get("install") or []
+    result = get_part(identifier, row["download_url"], part_name, install_stanzas)
+    return json.dumps(result, indent=2)
 
 
 _quiet_console = Console(quiet=True)
