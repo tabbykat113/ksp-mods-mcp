@@ -287,6 +287,26 @@ def stream_and_parse(client: httpx.Client, stored_etag: str | None, *, console: 
                     if mod_version:
                         version_count += 1
 
+        # Invalidate enrichment cache for mods whose ckan_json changed.
+        # Read old JSON blobs in one query, delete stale enrichment rows.
+        if mod_data:
+            old_rows = conn.execute(
+                "SELECT identifier, ckan_json FROM mods WHERE identifier IN ({})".format(
+                    ",".join("?" * len(mod_data))
+                ),
+                list(mod_data.keys()),
+            ).fetchall()
+            changed = {
+                r["identifier"]
+                for r in old_rows
+                if r["ckan_json"] != mod_data[r["identifier"]]["ckan_json"]
+            }
+            if changed:
+                placeholders = ",".join("?" * len(changed))
+                ids = list(changed)
+                conn.execute(f"DELETE FROM github_cache WHERE identifier IN ({placeholders})", ids)
+                conn.execute(f"DELETE FROM spacedock_cache WHERE identifier IN ({placeholders})", ids)
+
         # Apply mod rows, download counts, and max KSP versions, then commit atomically
         if mod_data:
             apply_mod_data(conn, mod_data)
